@@ -1,0 +1,11 @@
+{
+  "name": "email-organizer",
+  "private": true,
+  "workspaces": ["packages/*", "apps/*"],
+  "scripts": {
+    "dev": "npm run dev -w @organizer/desktop",
+    "build": "npm run build -w @organizer/desktop",
+    "test": "npm run test -w @organizer/core",
+    "typecheck": "npm run typecheck -w @organizer/core && npm run typecheck -w @organizer/desktop"
+  }
+}
