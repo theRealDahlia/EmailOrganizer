@@ -1,4 +1,4 @@
-import type { Category, MailAction, MailMessage } from './types'
+import { CATEGORIES, type Category, type MailAction, type MailMessage } from './types'
 
 export type Condition =
   | { field: 'senderEmail'; op: 'equals' | 'contains'; value: string }
@@ -91,4 +91,44 @@ export function inverseActions(message: MailMessage, actions: MailAction[]): Mai
     }
   }
   return undo
+}
+
+type FieldKind = 'text' | 'number' | 'boolean' | 'category'
+
+/** What the rule editor offers for each condition field. */
+export const CONDITION_SPECS: Record<Condition['field'], { label: string; ops: string[]; kind: FieldKind }> = {
+  senderEmail: { label: 'Sender email', ops: ['equals', 'contains'], kind: 'text' },
+  senderDomain: { label: 'Sender domain', ops: ['equals'], kind: 'text' },
+  subject: { label: 'Subject', ops: ['contains'], kind: 'text' },
+  category: { label: 'Category', ops: ['equals'], kind: 'category' },
+  olderThanDays: { label: 'Older than (days)', ops: ['gte'], kind: 'number' },
+  isUnread: { label: 'Is unread', ops: ['equals'], kind: 'boolean' },
+}
+
+const SYSTEM_LABELS = new Set([
+  'INBOX', 'UNREAD', 'SENT', 'DRAFT', 'SPAM', 'TRASH', 'STARRED', 'IMPORTANT', 'CHAT',
+  'CATEGORY_PERSONAL', 'CATEGORY_SOCIAL', 'CATEGORY_PROMOTIONS', 'CATEGORY_UPDATES', 'CATEGORY_FORUMS',
+])
+
+/** Returns human-readable problems; an empty list means the rule is safe to save. */
+export function validateRule(rule: Rule): string[] {
+  const problems: string[] = []
+  if (!rule.name.trim()) problems.push('Give the rule a name.')
+  if (rule.conditions.length === 0) problems.push('Add at least one condition.')
+  if (rule.actions.length === 0) problems.push('Add at least one action.')
+
+  for (const c of rule.conditions) {
+    const spec = CONDITION_SPECS[c.field]
+    if (!spec || !spec.ops.includes(c.op)) { problems.push(`Invalid condition: ${c.field}.`); continue }
+    if (spec.kind === 'text' && !String(c.value).trim()) problems.push(`${spec.label} needs a value.`)
+    if (spec.kind === 'number' && !(Number.isInteger(c.value) && (c.value as number) >= 0)) problems.push(`${spec.label} must be a whole number, 0 or more.`)
+    if (spec.kind === 'category' && !CATEGORIES.includes(c.value as Category)) problems.push('Pick a category.')
+    if (spec.kind === 'boolean' && typeof c.value !== 'boolean') problems.push(`${spec.label} must be yes or no.`)
+  }
+
+  for (const a of rule.actions) {
+    if ((a.type === 'addLabel' || a.type === 'removeLabel') && !a.label.trim()) problems.push('Label actions need a label name.')
+    if (a.type === 'addLabel' && SYSTEM_LABELS.has(a.label.trim().toUpperCase())) problems.push(`"${a.label}" is a built-in Gmail label; choose another name.`)
+  }
+  return problems
 }

@@ -8,6 +8,10 @@ export type Category =
   | 'work'
   | 'personal'
 
+export const CATEGORIES: Category[] = [
+  'newsletter', 'promotion', 'receipt', 'travel', 'social', 'finance', 'work', 'personal',
+]
+
 export interface Address {
   name: string
   email: string
@@ -23,6 +27,8 @@ export interface MailMessage {
   isUnread: boolean
   sizeBytes: number
   listUnsubscribe?: string
+  /** List-Unsubscribe-Post advertises RFC 8058 one-click unsubscribe */
+  oneClickUnsubscribe?: boolean
   category?: Category
 }
 

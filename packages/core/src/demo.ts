@@ -28,7 +28,10 @@ export class DemoProvider implements MailProvider {
         labels: ['INBOX'],
         isUnread: i % 4 !== 0,
         sizeBytes: 8_000 + ((i * 7919) % 90_000),
-        listUnsubscribe: s.unsub ? `<mailto:unsub@${s.email.split('@')[1]}>` : undefined,
+        listUnsubscribe: s.unsub
+          ? `<https://${s.email.split('@')[1]}/unsubscribe>, <mailto:unsub@${s.email.split('@')[1]}>`
+          : undefined,
+        oneClickUnsubscribe: s.unsub && s.email.startsWith('news@'),
       }
     })
   }

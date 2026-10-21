@@ -1,6 +1,7 @@
 import { app, BrowserWindow, ipcMain, shell } from 'electron'
 import { join } from 'node:path'
 import type { Rule } from '@organizer/core'
+import type { UnsubscribeMethod } from '../shared'
 import { AccountManager } from './accounts'
 import { Store } from './db'
 import { SecretStore } from './secrets'
@@ -15,7 +16,16 @@ function registerIpc(service: OrganizerService, accounts: AccountManager) {
   ipcMain.handle('connectGmail', async () => { await accounts.connect(); service.invalidate() })
   ipcMain.handle('disconnect', async () => { await accounts.disconnect(); service.invalidate() })
   ipcMain.handle('listRules', () => store.listRules())
-  ipcMain.handle('saveRule', (_e, rule: Rule) => store.saveRule(rule))
+  ipcMain.handle('saveRule', (_e, rule: Rule) => service.saveRule(rule))
+  ipcMain.handle('subscriptions', () => service.subscriptions())
+  ipcMain.handle('createArchiveRule', (_e, email: string) => service.createArchiveRule(email))
+  ipcMain.handle('unsubscribe', async (_e, email: string, method: UnsubscribeMethod) => {
+    if (method === 'oneClick') return service.oneClickUnsubscribe(email)
+    const t = await service.unsubscribeTargets(email)
+    const target = method === 'openLink' ? t.https : t.mailto
+    if (!target) throw new Error('That unsubscribe method is not available for this sender.')
+    await shell.openExternal(target) // https URLs were checked by parseListUnsubscribe; mailto opens the user's mail app
+  })
   ipcMain.handle('deleteRule', (_e, id: string) => store.deleteRule(id))
   ipcMain.handle('preview', (_e, id: string) => service.preview(id))
   ipcMain.handle('apply', (_e, id: string) => service.apply(id))

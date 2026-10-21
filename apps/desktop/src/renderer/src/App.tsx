@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useState } from 'react'
 import type { Overview, Rule } from '@organizer/core'
 import type { AccountStatus, ActivityEntry, PreviewResult } from '../../shared'
+import { RuleEditor } from './RuleEditor'
+import { SubscriptionsTab } from './SubscriptionsTab'
 
-type Tab = 'overview' | 'rules' | 'activity' | 'accounts'
+type Tab = 'overview' | 'subscriptions' | 'rules' | 'activity' | 'accounts'
 const api = window.organizer
 
 function describe(rule: Rule): string {
@@ -61,8 +63,10 @@ function RulesTab({ onApplied }: { onApplied: () => void }) {
   const [preview, setPreview] = useState<{ rule: Rule; result: PreviewResult } | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [editing, setEditing] = useState<Rule | 'new' | null>(null)
 
-  useEffect(() => { api.listRules().then(setRules) }, [])
+  const loadRules = () => api.listRules().then(setRules)
+  useEffect(() => { loadRules() }, [])
 
   const run = async (fn: () => Promise<void>) => {
     setBusy(true); setError(null)
@@ -78,8 +82,19 @@ function RulesTab({ onApplied }: { onApplied: () => void }) {
   return (
     <>
       {error && <div className="notice error">{error}</div>}
+      {editing && (
+        <RuleEditor
+          initial={editing === 'new' ? null : editing}
+          onCancel={() => setEditing(null)}
+          onSave={async (rule) => { await api.saveRule(rule); setEditing(null); setPreview(null); await loadRules() }}
+        />
+      )}
       <section className="card">
-        <h2>Rules</h2>
+        <div className="row" style={{ paddingTop: 0 }}>
+          <h2 style={{ margin: 0 }}>Rules</h2>
+          <button className="btn primary" disabled={!!editing} onClick={() => setEditing('new')}>New rule</button>
+        </div>
+        {rules.length === 0 && <p className="muted">No rules yet.</p>}
         {rules.map((rule) => (
           <div className="row" key={rule.id}>
             <div>
@@ -88,6 +103,11 @@ function RulesTab({ onApplied }: { onApplied: () => void }) {
             </div>
             <div className="actions">
               <button className="btn" disabled={busy} onClick={() => run(async () => setPreview({ rule, result: await api.preview(rule.id) }))}>Preview</button>
+              <button className="btn" disabled={busy || !!editing} onClick={() => setEditing(rule)}>Edit</button>
+              <button className="btn" disabled={busy} onClick={() => run(async () => {
+                if (!window.confirm(`Delete the rule "${rule.name}"? Mail already changed by it is not affected.`)) return
+                await api.deleteRule(rule.id); setPreview(null); await loadRules()
+              })}>Delete</button>
             </div>
           </div>
         ))}
@@ -219,11 +239,12 @@ export function App() {
         </span>
       </header>
       <nav role="tablist">
-        {(['overview', 'rules', 'activity', 'accounts'] as Tab[]).map((t) => (
+        {(['overview', 'subscriptions', 'rules', 'activity', 'accounts'] as Tab[]).map((t) => (
           <button key={t} role="tab" aria-selected={tab === t} onClick={() => setTab(t)}>{t[0].toUpperCase() + t.slice(1)}</button>
         ))}
       </nav>
       {tab === 'overview' && <OverviewTab overview={overview} error={overviewError} onRescan={() => { setOverview(null); refresh(true) }} />}
+      {tab === 'subscriptions' && <SubscriptionsTab onGoToRules={() => setTab('rules')} />}
       {tab === 'rules' && <RulesTab onApplied={() => refresh()} />}
       {tab === 'activity' && <ActivityTab onUndone={() => refresh()} />}
       {tab === 'accounts' && <AccountsTab status={status} onChanged={accountChanged} />}

@@ -1,4 +1,4 @@
-import type { MailMessage, Overview, PlannedChange, Rule } from '@organizer/core'
+import type { MailMessage, Overview, PlannedChange, Rule, Subscription } from '@organizer/core'
 
 export interface ActivityEntry {
   id: number
@@ -7,6 +7,8 @@ export interface ActivityEntry {
   messageCount: number
   undone: boolean
 }
+
+export type UnsubscribeMethod = 'oneClick' | 'openLink' | 'openMail'
 
 export interface PreviewResult {
   changes: PlannedChange[]
@@ -32,6 +34,10 @@ export interface OrganizerApi {
   connectGmail(): Promise<void>
   disconnect(): Promise<void>
   listRules(): Promise<Rule[]>
+  subscriptions(): Promise<Subscription[]>
+  unsubscribe(senderEmail: string, method: UnsubscribeMethod): Promise<void>
+  /** Creates (but does not run) a rule that archives everything from this sender. */
+  createArchiveRule(senderEmail: string): Promise<Rule>
   saveRule(rule: Rule): Promise<void>
   deleteRule(id: string): Promise<void>
   preview(ruleId: string): Promise<PreviewResult>

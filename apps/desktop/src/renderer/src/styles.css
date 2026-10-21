@@ -44,3 +44,10 @@ button.btn:disabled { opacity: .5; cursor: default; }
 .form label { display: grid; gap: 4px; color: var(--muted); }
 .form input { font: inherit; padding: 7px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--text); }
 code { background: var(--bg); padding: 1px 5px; border-radius: 4px; }
+
+.cond { display: flex; gap: 6px; margin-bottom: 6px; flex-wrap: wrap; }
+select, .cond input { font: inherit; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--text); }
+.cond input { flex: 1; min-width: 140px; }
+label.inline { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; color: var(--text); }
+label.inline input[type="text"], label.inline input:not([type]) { flex: 1; }
+nav { flex-wrap: wrap; }

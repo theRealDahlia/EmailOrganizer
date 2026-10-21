@@ -1,6 +1,6 @@
 import {
-  buildOverview, categorize, inverseActions, planChanges,
-  type MailMessage, type MailProvider, type Rule,
+  buildOverview, buildSubscriptions, categorize, inverseActions, parseListUnsubscribe, planChanges, validateRule,
+  type MailMessage, type MailProvider, type Rule, type Subscription, type UnsubscribeTargets,
 } from '@organizer/core'
 import type { ActivityEntry, PreviewResult } from '../shared'
 import type { Store, UndoStep } from './db'
@@ -54,6 +54,51 @@ export class OrganizerService {
   async overview(refresh = false) {
     if (refresh) this.invalidate()
     return buildOverview(await this.messages())
+  }
+
+  saveRule(rule: Rule): void {
+    const problems = validateRule(rule)
+    if (problems.length) throw new Error(problems.join(' '))
+    this.store.saveRule(rule)
+  }
+
+  async subscriptions(): Promise<Subscription[]> {
+    return buildSubscriptions(await this.messages())
+  }
+
+  /** Where an unsubscribe can be sent. Re-derived from scanned mail so the renderer can't supply URLs. */
+  async unsubscribeTargets(senderEmail: string): Promise<UnsubscribeTargets & { oneClick: boolean }> {
+    const sub = (await this.subscriptions()).find((s) => s.email === senderEmail.toLowerCase())
+    if (!sub) throw new Error('No unsubscribe information for that sender.')
+    return { ...parseListUnsubscribe(sub.listUnsubscribe), oneClick: sub.oneClick }
+  }
+
+  /** RFC 8058 one-click: a single POST, no cookies or credentials, redirects not followed. */
+  async oneClickUnsubscribe(senderEmail: string): Promise<void> {
+    const t = await this.unsubscribeTargets(senderEmail)
+    if (!t.https || !t.oneClick) throw new Error('This sender does not support one-click unsubscribe.')
+    const res = await fetch(t.https, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: 'List-Unsubscribe=One-Click',
+      redirect: 'manual',
+      signal: AbortSignal.timeout(15_000),
+    })
+    if (!res.ok && !(res.status >= 300 && res.status < 400)) throw new Error(`The sender's server refused the request (${res.status}).`)
+  }
+
+  createArchiveRule(senderEmail: string): Rule {
+    const email = senderEmail.toLowerCase()
+    const rule: Rule = {
+      id: `archive-${email}`,
+      name: `Archive mail from ${email}`,
+      enabled: true,
+      match: 'all',
+      conditions: [{ field: 'senderEmail', op: 'equals', value: email }],
+      actions: [{ type: 'addLabel', label: 'Subscriptions' }, { type: 'archive' }],
+    }
+    this.saveRule(rule)
+    return rule
   }
 
   private requireRule(id: string): Rule {

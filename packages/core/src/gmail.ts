@@ -2,7 +2,7 @@ import { AuthExpiredError } from './oauth'
 import type { Address, MailAction, MailMessage, MailPage, MailProvider } from './types'
 
 const API = 'https://gmail.googleapis.com/gmail/v1/users/me'
-const METADATA_HEADERS = ['From', 'Subject', 'List-Unsubscribe']
+const METADATA_HEADERS = ['From', 'Subject', 'List-Unsubscribe', 'List-Unsubscribe-Post']
 const BATCH_MODIFY_LIMIT = 1000
 const FETCH_CONCURRENCY = 4
 const MAX_RETRIES = 5
@@ -158,6 +158,7 @@ export class GmailProvider implements MailProvider {
       isUnread: ids.includes('UNREAD'),
       sizeBytes: r.sizeEstimate ?? 0,
       listUnsubscribe: header('List-Unsubscribe'),
+      oneClickUnsubscribe: /one-click/i.test(header('List-Unsubscribe-Post') ?? ''),
     }
   }
 
