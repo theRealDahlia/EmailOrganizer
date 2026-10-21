@@ -38,15 +38,17 @@ export function RuleEditor({ initial, onSave, onCancel }: { initial: Rule | null
   const existingLabel = initialActions.find((a): a is Extract<MailAction, { type: 'addLabel' }> => a.type === 'addLabel')
   const [label, setLabel] = useState(existingLabel?.label ?? '')
   const [archive, setArchive] = useState(initialActions.some((a) => a.type === 'archive'))
+  const [trash, setTrash] = useState(initialActions.some((a) => a.type === 'trash'))
   const [markRead, setMarkRead] = useState(initialActions.some((a) => a.type === 'markRead'))
   const [problems, setProblems] = useState<string[]>([])
   const [saving, setSaving] = useState(false)
 
   const build = (): Rule => {
-    const kept = initialActions.filter((a) => !['addLabel', 'archive', 'markRead'].includes(a.type))
+    const kept = initialActions.filter((a) => !['addLabel', 'archive', 'markRead', 'trash'].includes(a.type))
     const actions: MailAction[] = [...kept]
     if (label.trim()) actions.push({ type: 'addLabel', label: label.trim() })
-    if (archive) actions.push({ type: 'archive' })
+    if (trash) actions.push({ type: 'trash' })
+    else if (archive) actions.push({ type: 'archive' })
     if (markRead) actions.push({ type: 'markRead' })
     return { id: initial?.id ?? crypto.randomUUID(), name: name.trim(), enabled: initial?.enabled ?? true, match, conditions, actions }
   }
@@ -91,7 +93,8 @@ export function RuleEditor({ initial, onSave, onCancel }: { initial: Rule | null
         <div>
           <div className="muted" style={{ marginBottom: 6 }}>Then:</div>
           <label className="inline">Add label <input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="(optional) e.g. Receipts" /></label>
-          <label className="inline"><input type="checkbox" checked={archive} onChange={(e) => setArchive(e.target.checked)} /> Archive (remove from inbox)</label>
+          <label className="inline"><input type="checkbox" checked={archive && !trash} disabled={trash} onChange={(e) => setArchive(e.target.checked)} /> Archive (remove from inbox)</label>
+          <label className="inline"><input type="checkbox" checked={trash} onChange={(e) => setTrash(e.target.checked)} /> <span><b>Move to Trash</b> <span className="muted">to free space and declutter. Gmail keeps Trash for 30 days, so you can undo, then deletes it for good.</span></span></label>
           <label className="inline"><input type="checkbox" checked={markRead} onChange={(e) => setMarkRead(e.target.checked)} /> Mark as read</label>
         </div>
 

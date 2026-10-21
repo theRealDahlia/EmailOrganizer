@@ -35,6 +35,8 @@ export interface MailMessage {
 export type MailAction =
   | { type: 'addLabel'; label: string }
   | { type: 'archive' }
+  /** Moves to Trash. Recoverable until Gmail empties Trash after 30 days; never a permanent delete. */
+  | { type: 'trash' }
   | { type: 'markRead' }
   | { type: 'markUnread' }
   | { type: 'removeLabel'; label: string }

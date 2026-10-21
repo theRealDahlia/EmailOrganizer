@@ -7,9 +7,16 @@ import { SubscriptionsTab } from './SubscriptionsTab'
 type Tab = 'overview' | 'subscriptions' | 'rules' | 'activity' | 'accounts'
 const api = window.organizer
 
+function formatBytes(n: number): string {
+  if (n < 1024 * 1024) return `${Math.max(1, Math.round(n / 1024))} KB`
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`
+}
+
+const trashes = (rule: Rule) => rule.actions.some((a) => a.type === 'trash')
+
 function describe(rule: Rule): string {
   const c = rule.conditions.map((c) => `${c.field} ${c.op} ${String(c.value)}`).join(rule.match === 'all' ? ' AND ' : ' OR ')
-  const a = rule.actions.map((a) => ('label' in a ? `${a.type} "${a.label}"` : a.type)).join(', ')
+  const a = rule.actions.map((a) => ('label' in a ? `${a.type} "${a.label}"` : a.type === 'trash' ? 'move to Trash' : a.type)).join(', ')
   return `When ${c} → ${a}`
 }
 
@@ -116,6 +123,13 @@ function RulesTab({ onApplied }: { onApplied: () => void }) {
         <section className="card" style={{ marginTop: 16 }}>
           <h2>Preview: {preview.rule.name}</h2>
           <p>This would change <b>{preview.result.changes.length}</b> messages. Nothing has been changed yet.</p>
+          {trashes(preview.rule) && (
+            <div className="notice danger">
+              <b>These messages would be moved to Trash</b>, about <b>{formatBytes(preview.result.totalBytes)}</b> in size.
+              Gmail keeps Trash for 30 days and then deletes it permanently, which is when the space is freed. You can undo from the Activity tab until then.
+              Check the list below carefully.
+            </div>
+          )}
           <table>
             <tbody>
               {preview.result.samples.map((m) => (
@@ -124,9 +138,13 @@ function RulesTab({ onApplied }: { onApplied: () => void }) {
             </tbody>
           </table>
           <div className="actions" style={{ marginTop: 12 }}>
-            <button className="btn primary" disabled={busy || preview.result.changes.length === 0}
-              onClick={() => run(async () => { await api.apply(preview.rule.id); setPreview(null); onApplied() })}>
-              Apply to {preview.result.changes.length} messages
+            <button className={trashes(preview.rule) ? 'btn danger' : 'btn primary'} disabled={busy || preview.result.changes.length === 0}
+              onClick={() => run(async () => {
+                const n = preview.result.changes.length
+                if (trashes(preview.rule) && !window.confirm(`Move ${n} messages to Trash?\n\nYou can undo this from the Activity tab, and Gmail empties Trash after 30 days.`)) return
+                await api.apply(preview.rule.id); setPreview(null); onApplied()
+              })}>
+              {trashes(preview.rule) ? `Move ${preview.result.changes.length} messages to Trash` : `Apply to ${preview.result.changes.length} messages`}
             </button>
             <button className="btn" onClick={() => setPreview(null)}>Cancel</button>
           </div>

@@ -71,6 +71,18 @@ describe('GmailProvider', () => {
     expect(calls.filter((c) => c.key === 'POST /labels')).toHaveLength(1)
   })
 
+  it('trash adds TRASH and removes INBOX in one batchModify; undo reverses it', async () => {
+    const { impl, calls } = fakeFetch({
+      'GET /labels': () => json({ labels: [...LABELS.labels, { id: 'TRASH', name: 'TRASH' }] }),
+      'POST /messages/batchModify': () => new Response(null, { status: 204 }),
+    })
+    const p = provider(impl)
+    await p.applyActions(['a'], [{ type: 'trash' }])
+    expect(calls.at(-1)!.body).toEqual({ ids: ['a'], addLabelIds: ['TRASH'], removeLabelIds: ['INBOX'] })
+    await p.applyActions(['a'], [{ type: 'removeLabel', label: 'TRASH' }, { type: 'addLabel', label: 'INBOX' }])
+    expect(calls.at(-1)!.body).toEqual({ ids: ['a'], addLabelIds: ['INBOX'], removeLabelIds: ['TRASH'] })
+  })
+
   it('lets later actions override earlier ones (undo ordering)', async () => {
     const { impl, calls } = fakeFetch({
       'GET /labels': () => json(LABELS),

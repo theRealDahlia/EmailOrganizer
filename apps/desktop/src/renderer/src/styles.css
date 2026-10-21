@@ -51,3 +51,6 @@ select, .cond input { font: inherit; padding: 6px 8px; border: 1px solid var(--l
 label.inline { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; color: var(--text); }
 label.inline input[type="text"], label.inline input:not([type]) { flex: 1; }
 nav { flex-wrap: wrap; }
+
+.notice.danger { border-color: var(--danger); }
+button.btn.danger { background: var(--danger); color: #fff; border-color: var(--danger); }

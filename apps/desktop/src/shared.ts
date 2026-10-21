@@ -13,6 +13,8 @@ export type UnsubscribeMethod = 'oneClick' | 'openLink' | 'openMail'
 export interface PreviewResult {
   changes: PlannedChange[]
   samples: MailMessage[]
+  /** Combined size of the distinct messages the rule would change (Gmail's size estimate). */
+  totalBytes: number
 }
 
 export interface AccountStatus {

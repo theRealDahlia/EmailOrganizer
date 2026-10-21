@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildSubscriptions, isPublicHttpsUrl, parseListUnsubscribe, validateRule, type MailMessage, type Rule } from './index'
+import { inverseActions, buildSubscriptions, isPublicHttpsUrl, parseListUnsubscribe, validateRule, type MailMessage, type Rule } from './index'
 
 const rule = (over: Partial<Rule> = {}): Rule => ({
   id: 'r', name: 'Test', enabled: true, match: 'all',
@@ -22,6 +22,30 @@ describe('validateRule', () => {
   it('rejects built-in Gmail label names', () => {
     expect(validateRule(rule({ actions: [{ type: 'addLabel', label: 'inbox' }] }))).toHaveLength(1)
     expect(validateRule(rule({ actions: [{ type: 'addLabel', label: 'Receipts' }] }))).toEqual([])
+  })
+})
+
+describe('trash rules', () => {
+  const trash = (over: Partial<Rule> = {}) => rule({ actions: [{ type: 'trash' }], ...over })
+  it('accepts trash with a narrow condition', () => expect(validateRule(trash())).toEqual([]))
+  it('rejects trash on broad conditions only', () => {
+    expect(validateRule(trash({ conditions: [{ field: 'olderThanDays', op: 'gte', value: 30 }] }))).toHaveLength(1)
+    expect(validateRule(trash({ conditions: [{ field: 'isUnread', op: 'equals', value: true }] }))).toHaveLength(1)
+    expect(validateRule(trash({ conditions: [{ field: 'category', op: 'equals', value: 'personal' }] }))).toHaveLength(1)
+  })
+  it('allows broad conditions alongside a narrow one when matching all', () => {
+    expect(validateRule(trash({ conditions: [
+      { field: 'category', op: 'equals', value: 'promotion' }, { field: 'olderThanDays', op: 'gte', value: 30 },
+    ] }))).toEqual([])
+  })
+  it('with "any", every condition must be narrow', () => {
+    expect(validateRule(trash({ match: 'any', conditions: [
+      { field: 'senderDomain', op: 'equals', value: 'a.com' }, { field: 'olderThanDays', op: 'gte', value: 30 },
+    ] }))).toHaveLength(1)
+  })
+  it('inverse of trash restores inbox membership', () => {
+    const m = { id: 'x', accountId: 'a', from: { name: 'A', email: 'a@a.com' }, subject: 's', date: '2026-01-01', labels: ['INBOX'], isUnread: false, sizeBytes: 1 }
+    expect(inverseActions(m, [{ type: 'trash' }])).toEqual([{ type: 'removeLabel', label: 'TRASH' }, { type: 'addLabel', label: 'INBOX' }])
   })
 })
 

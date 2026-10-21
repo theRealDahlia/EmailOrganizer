@@ -92,6 +92,7 @@ export class GmailProvider implements MailProvider {
     for (const a of actions) {
       switch (a.type) {
         case 'archive': setLabel('INBOX', false); break
+        case 'trash': setLabel('TRASH', true); setLabel('INBOX', false); break
         case 'markRead': setLabel('UNREAD', false); break
         case 'markUnread': setLabel('UNREAD', true); break
         case 'addLabel': setLabel(await this.ensureLabel(a.label), true); break

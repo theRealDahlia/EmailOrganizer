@@ -111,7 +111,8 @@ export class OrganizerService {
     const messages = await this.messages()
     const changes = planChanges([this.requireRule(ruleId)], messages)
     const ids = new Set(changes.map((c) => c.messageId))
-    return { changes, samples: messages.filter((m) => ids.has(m.id)).slice(0, 8) }
+    const matched = messages.filter((m) => ids.has(m.id))
+    return { changes, samples: matched.slice(0, 8), totalBytes: matched.reduce((n, m) => n + m.sizeBytes, 0) }
   }
 
   async apply(ruleId: string): Promise<ActivityEntry> {

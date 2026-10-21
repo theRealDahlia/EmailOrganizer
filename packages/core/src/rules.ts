@@ -76,6 +76,10 @@ export function inverseActions(message: MailMessage, actions: MailAction[]): Mai
       case 'archive':
         if (message.labels.includes('INBOX')) undo.push({ type: 'addLabel', label: 'INBOX' })
         break
+      case 'trash':
+        if (!message.labels.includes('TRASH')) undo.push({ type: 'removeLabel', label: 'TRASH' })
+        if (message.labels.includes('INBOX')) undo.push({ type: 'addLabel', label: 'INBOX' })
+        break
       case 'markRead':
         if (message.isUnread) undo.push({ type: 'markUnread' })
         break
@@ -129,6 +133,21 @@ export function validateRule(rule: Rule): string[] {
   for (const a of rule.actions) {
     if ((a.type === 'addLabel' || a.type === 'removeLabel') && !a.label.trim()) problems.push('Label actions need a label name.')
     if (a.type === 'addLabel' && SYSTEM_LABELS.has(a.label.trim().toUpperCase())) problems.push(`"${a.label}" is a built-in Gmail label; choose another name.`)
+  }
+
+  // A rule that trashes mail must not be able to match most of the inbox by accident.
+  if (rule.actions.some((a) => a.type === 'trash')) {
+    const narrow = (c: Condition) =>
+      c.field === 'senderEmail' || c.field === 'senderDomain' || c.field === 'subject' ||
+      (c.field === 'category' && c.value !== 'personal')
+    const ok = rule.match === 'all' ? rule.conditions.some(narrow) : rule.conditions.every(narrow)
+    if (rule.conditions.length > 0 && !ok) {
+      problems.push(
+        rule.match === 'all'
+          ? 'Rules that move mail to Trash need a sender, domain, subject, or category condition so they can’t match your whole inbox.'
+          : 'With “any”, every condition of a Trash rule must be a sender, domain, subject, or category condition.',
+      )
+    }
   }
   return problems
 }

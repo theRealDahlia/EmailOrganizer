@@ -46,6 +46,7 @@ export class DemoProvider implements MailProvider {
       if (!set.has(m.id)) continue
       for (const a of actions) {
         if (a.type === 'archive') m.labels = m.labels.filter((l) => l !== 'INBOX')
+        else if (a.type === 'trash') m.labels = [...m.labels.filter((l) => l !== 'INBOX'), 'TRASH']
         else if (a.type === 'markRead') m.isUnread = false
         else if (a.type === 'markUnread') m.isUnread = true
         else if (a.type === 'removeLabel') m.labels = m.labels.filter((l) => l !== a.label)
