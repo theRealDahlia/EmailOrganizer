@@ -5,6 +5,7 @@ A local-first desktop app that organizes your mailbox. Mail is processed on your
 ## Layout
 
 - `apps/desktop` — Electron + React app (main process, preload bridge, renderer)
+- `apps/site` — static landing page and privacy policy (`npm run dev -w @organizer/site`)
 - `packages/core` — mail provider interface, categorizer, rules engine, stats (no UI or Electron dependencies)
 
 ## Develop

@@ -71,7 +71,7 @@ Two deliverables in one repo:
 
 ## Phases
 
-0. **Landing page** *(deferred: app first)* — scaffold `/apps/site`, write copy, deploy a placeholder with waitlist and privacy policy (also unblocks Google OAuth verification).
+0. **Landing page** *(first version built in apps/site; needs domain, real contact email, and download links)* — scaffold `/apps/site`, write copy, deploy a placeholder with waitlist and privacy policy (also unblocks Google OAuth verification).
 1. **Foundation** *(in progress: shell, SQLite, core, demo mailbox done; Gmail provider, PKCE OAuth, keychain storage written; awaiting first real-account test)* — monorepo setup, desktop shell, SQLite schema, Gmail desktop OAuth + read-only metadata sync, overview dashboard.
 2. **Organize** — categorizer, rules engine with dry-run, apply actions via Gmail API, action log + undo.
 3. **Cleanup** — bulk cleanup UI, unsubscribe helper, suggested rules.
