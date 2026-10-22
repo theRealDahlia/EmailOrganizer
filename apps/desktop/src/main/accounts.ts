@@ -59,12 +59,11 @@ export class AccountManager {
       await shell.openExternal(buildAuthUrl({ clientId: client.clientId, redirectUri: listener.redirectUri, challenge, state }))
       const code = await listener.code
       const tokens = await exchangeCode({ ...client, code, verifier, redirectUri: listener.redirectUri })
-      const provider = this.build(client, tokens)
-      const email = await provider.getProfileEmail()
+      const email = await this.build(client, tokens).getProfileEmail()
 
       this.secrets.set(K.tokens, JSON.stringify(tokens))
       this.secrets.set(K.email, email)
-      this.gmail = provider
+      this.gmail = this.build(client, tokens, email) // the provider's accountId must be the real address
     } finally {
       listener.close()
     }

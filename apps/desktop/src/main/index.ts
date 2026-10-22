@@ -1,7 +1,7 @@
 import { app, BrowserWindow, ipcMain, shell } from 'electron'
 import { join } from 'node:path'
 import type { Rule } from '@organizer/core'
-import type { UnsubscribeMethod } from '../shared'
+import type { ScanProgress, UnsubscribeMethod } from '../shared'
 import { AccountManager } from './accounts'
 import { Store } from './db'
 import { SecretStore } from './secrets'
@@ -15,7 +15,13 @@ function registerIpc(service: OrganizerService, accounts: AccountManager) {
   ipcMain.handle('storage', () => service.storage())
   ipcMain.handle('saveGoogleCredentials', (_e, id: string, secret: string) => accounts.saveCredentials(id, secret))
   ipcMain.handle('connectGmail', async () => { await accounts.connect(); service.invalidate() })
-  ipcMain.handle('disconnect', async () => { await accounts.disconnect(); service.invalidate() })
+  ipcMain.handle('cancelScan', () => service.cancelScan())
+  ipcMain.handle('disconnect', async () => {
+    const email = accounts.status().email
+    await accounts.disconnect()
+    if (email) store.clearMessages(email) // the local copy of this account's mail metadata goes with the sign-in
+    service.invalidate()
+  })
   ipcMain.handle('listRules', () => store.listRules())
   ipcMain.handle('saveRule', (_e, rule: Rule) => service.saveRule(rule))
   ipcMain.handle('subscriptions', () => service.subscriptions())
@@ -60,7 +66,8 @@ function createWindow() {
 app.whenReady().then(() => {
   store = new Store(join(app.getPath('userData'), 'organizer.sqlite'))
   const accounts = new AccountManager(new SecretStore(join(app.getPath('userData'), 'secrets.json')))
-  registerIpc(new OrganizerService(() => accounts.provider(), store), accounts)
+  const sendProgress = (p: ScanProgress) => BrowserWindow.getAllWindows().forEach((w) => w.webContents.send('scan-progress', p))
+  registerIpc(new OrganizerService(() => accounts.provider(), store, sendProgress), accounts)
   createWindow()
   app.on('activate', () => BrowserWindow.getAllWindows().length === 0 && createWindow())
 })

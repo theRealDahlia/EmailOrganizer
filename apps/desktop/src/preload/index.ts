@@ -1,10 +1,16 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import type { OrganizerApi } from '../shared'
+import type { OrganizerApi, ScanProgress } from '../shared'
 
 const call = (channel: string) => (...args: unknown[]) => ipcRenderer.invoke(channel, ...args)
 
 const api: OrganizerApi = {
   overview: call('overview') as OrganizerApi['overview'],
+  onScanProgress: (cb) => {
+    const handler = (_e: Electron.IpcRendererEvent, p: ScanProgress) => cb(p)
+    ipcRenderer.on('scan-progress', handler)
+    return () => ipcRenderer.removeListener('scan-progress', handler)
+  },
+  cancelScan: call('cancelScan') as OrganizerApi['cancelScan'],
   accountStatus: call('accountStatus') as OrganizerApi['accountStatus'],
   storage: call('storage') as OrganizerApi['storage'],
   saveGoogleCredentials: call('saveGoogleCredentials') as OrganizerApi['saveGoogleCredentials'],

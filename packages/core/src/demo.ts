@@ -1,3 +1,4 @@
+import { applyActionsToMessage } from './rules'
 import type { MailAction, MailMessage, MailPage, MailProvider, StorageQuota } from './types'
 
 const SENDERS = [
@@ -14,6 +15,7 @@ const SENDERS = [
 /** Deterministic fake mailbox so the app is fully usable without Google credentials. */
 export class DemoProvider implements MailProvider {
   readonly id = 'demo'
+  readonly accountId: string = 'demo'
   private messages: MailMessage[]
 
   constructor(count = 300, now = Date.now()) {
@@ -45,18 +47,17 @@ export class DemoProvider implements MailProvider {
     return { messages: this.messages.map((m) => ({ ...m, labels: [...m.labels] })) }
   }
 
+  async listInboxIds(unreadOnly: boolean): Promise<string[]> {
+    return this.messages.filter((m) => m.labels.includes('INBOX') && (!unreadOnly || m.isUnread)).map((m) => m.id)
+  }
+
+  async getMessages(ids: string[], _opts?: { signal?: AbortSignal }): Promise<MailMessage[]> {
+    const byId = new Map(this.messages.map((m) => [m.id, m]))
+    return ids.flatMap((id) => (byId.has(id) ? [{ ...byId.get(id)!, labels: [...byId.get(id)!.labels] }] : []))
+  }
+
   async applyActions(ids: string[], actions: MailAction[]): Promise<void> {
     const set = new Set(ids)
-    for (const m of this.messages) {
-      if (!set.has(m.id)) continue
-      for (const a of actions) {
-        if (a.type === 'archive') m.labels = m.labels.filter((l) => l !== 'INBOX')
-        else if (a.type === 'trash') m.labels = [...m.labels.filter((l) => l !== 'INBOX'), 'TRASH']
-        else if (a.type === 'markRead') m.isUnread = false
-        else if (a.type === 'markUnread') m.isUnread = true
-        else if (a.type === 'removeLabel') m.labels = m.labels.filter((l) => l !== a.label)
-        else if (!m.labels.includes(a.label)) m.labels.push(a.label)
-      }
-    }
+    this.messages = this.messages.map((m) => (set.has(m.id) ? applyActionsToMessage(m, actions) : m))
   }
 }

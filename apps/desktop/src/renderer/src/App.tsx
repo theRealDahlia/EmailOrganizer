@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
-import type { Overview, Rule } from '@organizer/core'
-import type { AccountStatus, ActivityEntry, PreviewResult } from '../../shared'
+import type { Rule } from '@organizer/core'
+import type { AccountStatus, ActivityEntry, OverviewResult, PreviewResult, ScanProgress } from '../../shared'
+import { ScanProgressPanel } from './ScanProgressPanel'
 import { RuleEditor } from './RuleEditor'
 import { StorageMeter } from './StorageMeter'
 import { SubscriptionsTab } from './SubscriptionsTab'
@@ -21,7 +22,9 @@ function describe(rule: Rule): string {
   return `When ${c} → ${a}`
 }
 
-function OverviewTab({ overview, error, onRescan }: { overview: Overview | null; error: string | null; onRescan: () => void }) {
+function OverviewTab({ overview, error, progress, onRescan, onCancel }: {
+  overview: OverviewResult | null; error: string | null; progress: ScanProgress | null; onRescan: () => void; onCancel: () => void
+}) {
   if (error) {
     return (
       <div className="notice">
@@ -30,15 +33,21 @@ function OverviewTab({ overview, error, onRescan }: { overview: Overview | null;
       </div>
     )
   }
-  if (!overview) return <p className="muted">Scanning mailbox…</p>
+  if (!overview) return <ScanProgressPanel progress={progress} onCancel={onCancel} />
   const cats = Object.entries(overview.byCategory).sort((a, b) => b[1] - a[1])
   return (
     <>
+      {!overview.complete && (
+        <div className="notice">
+          Scan stopped: showing {overview.total.toLocaleString()} of {overview.inboxTotal.toLocaleString()} inbox messages (the newest first).{' '}
+          <button className="btn" onClick={onRescan}>Resume scan</button>
+        </div>
+      )}
       <div className="stats">
-        <div className="card stat"><b>{overview.total}</b><span>messages scanned</span></div>
-        <div className="card stat"><b>{overview.unread}</b><span>unread</span></div>
+        <div className="card stat"><b>{overview.total.toLocaleString()}</b><span>{overview.complete ? 'messages in inbox' : 'messages scanned'}</span></div>
+        <div className="card stat"><b>{overview.unread.toLocaleString()}</b><span>unread</span></div>
         <div className="card stat"><b>{overview.subscriptions.length}</b><span>subscriptions</span></div>
-        <div className="actions" style={{ alignSelf: 'flex-start' }}><button className="btn" onClick={onRescan}>Rescan</button></div>
+        {overview.complete && <div className="actions" style={{ alignSelf: 'flex-start' }}><button className="btn" onClick={onRescan}>Rescan</button></div>}
       </div>
       <div className="grid">
         <section className="card">
@@ -237,7 +246,8 @@ function AccountsTab({ status, onChanged }: { status: AccountStatus | null; onCh
 
 export function App() {
   const [tab, setTab] = useState<Tab>('overview')
-  const [overview, setOverview] = useState<Overview | null>(null)
+  const [overview, setOverview] = useState<OverviewResult | null>(null)
+  const [progress, setProgress] = useState<ScanProgress | null>(null)
   const [overviewError, setOverviewError] = useState<string | null>(null)
   const [status, setStatus] = useState<AccountStatus | null>(null)
 
@@ -248,6 +258,7 @@ export function App() {
   const loadStatus = useCallback(() => { api.accountStatus().then(setStatus) }, [])
   const accountChanged = useCallback(() => { loadStatus(); setOverview(null); refresh(true) }, [loadStatus, refresh])
   useEffect(() => { loadStatus(); refresh() }, [loadStatus, refresh])
+  useEffect(() => api.onScanProgress(setProgress), [])
 
   return (
     <div className="app">
@@ -262,8 +273,8 @@ export function App() {
           <button key={t} role="tab" aria-selected={tab === t} onClick={() => setTab(t)}>{t[0].toUpperCase() + t.slice(1)}</button>
         ))}
       </nav>
-      {tab === 'overview' && <OverviewTab overview={overview} error={overviewError} onRescan={() => { setOverview(null); refresh(true) }} />}
-      {tab === 'subscriptions' && <SubscriptionsTab onGoToRules={() => setTab('rules')} />}
+      {tab === 'overview' && <OverviewTab overview={overview} error={overviewError} progress={progress} onRescan={() => { setOverview(null); refresh(true) }} onCancel={() => { api.cancelScan() }} />}
+      {tab === 'subscriptions' && <SubscriptionsTab progress={progress} onCancel={() => { api.cancelScan() }} onGoToRules={() => setTab('rules')} />}
       {tab === 'rules' && <RulesTab onApplied={() => refresh()} />}
       {tab === 'activity' && <ActivityTab onUndone={() => refresh()} />}
       {tab === 'accounts' && <AccountsTab status={status} onChanged={accountChanged} />}

@@ -7,6 +7,10 @@ const METADATA_HEADERS = ['From', 'Subject', 'List-Unsubscribe', 'List-Unsubscri
 const DRIVE_ABOUT = 'https://www.googleapis.com/drive/v3/about'
 const BATCH_MODIFY_LIMIT = 1000
 const FETCH_CONCURRENCY = 4
+/** Gmail allows ~15,000 quota units/min per user and each message fetch costs 5, so stay near 2,000 fetches/min. */
+const MIN_FETCH_INTERVAL_MS = 30
+const LIST_PAGE_SIZE = 500
+const MAX_INBOX_IDS = 500_000
 const MAX_RETRIES = 5
 
 export class GmailApiError extends Error {
@@ -46,11 +50,17 @@ export interface GmailProviderOptions {
 
 export class GmailProvider implements MailProvider {
   readonly id = 'gmail'
+
+  get accountId(): string {
+    return this.opts.accountId
+  }
+
   private labelsById = new Map<string, string>()
   private labelsByName = new Map<string, string>() // lower-case name -> id
   private labelsLoaded = false
   private fetchImpl: typeof fetch
   private sleep: (ms: number) => Promise<void>
+  private nextFetchAt = 0
 
   constructor(private opts: GmailProviderOptions) {
     this.fetchImpl = opts.fetch ?? fetch
@@ -77,18 +87,51 @@ export class GmailProvider implements MailProvider {
     const q = new URLSearchParams({ maxResults: String(this.opts.pageSize ?? 100), labelIds: 'INBOX' })
     if (cursor) q.set('pageToken', cursor)
     const list = await this.request<{ messages?: { id: string }[]; nextPageToken?: string }>(`/messages?${q}`)
+    const messages = await this.getMessages((list.messages ?? []).map((m) => m.id))
+    return { messages, nextCursor: list.nextPageToken }
+  }
 
-    const ids = (list.messages ?? []).map((m) => m.id)
-    const messages: MailMessage[] = new Array(ids.length)
+  async listInboxIds(unreadOnly: boolean): Promise<string[]> {
+    const ids: string[] = []
+    let pageToken: string | undefined
+    do {
+      const q = new URLSearchParams({ maxResults: String(LIST_PAGE_SIZE) })
+      q.append('labelIds', 'INBOX')
+      if (unreadOnly) q.append('labelIds', 'UNREAD')
+      if (pageToken) q.set('pageToken', pageToken)
+      const page = await this.request<{ messages?: { id: string }[]; nextPageToken?: string }>(`/messages?${q}`)
+      for (const m of page.messages ?? []) ids.push(m.id)
+      pageToken = page.nextPageToken
+    } while (pageToken && ids.length < MAX_INBOX_IDS)
+    return ids
+  }
+
+  async getMessages(ids: string[], opts: { signal?: AbortSignal } = {}): Promise<MailMessage[]> {
+    await this.loadLabels()
+    const out: (MailMessage | undefined)[] = new Array(ids.length)
     let next = 0
     const worker = async () => {
-      while (next < ids.length) {
+      while (next < ids.length && !opts.signal?.aborted) {
         const i = next++
-        messages[i] = this.toMessage(await this.getMetadata(ids[i]))
+        try {
+          await this.throttleFetch()
+          out[i] = this.toMessage(await this.getMetadata(ids[i]))
+        } catch (e) {
+          if (e instanceof GmailApiError && e.status === 404) continue // deleted since it was listed
+          throw e
+        }
       }
     }
     await Promise.all(Array.from({ length: Math.min(FETCH_CONCURRENCY, ids.length) }, worker))
-    return { messages, nextCursor: list.nextPageToken }
+    return out.filter((m): m is MailMessage => m !== undefined)
+  }
+
+  /** Spaces message fetches out so a full-inbox scan stays under Gmail's per-minute quota. */
+  private async throttleFetch(): Promise<void> {
+    const now = Date.now()
+    const start = Math.max(now, this.nextFetchAt)
+    this.nextFetchAt = start + MIN_FETCH_INTERVAL_MS
+    if (start > now) await this.sleep(start - now)
   }
 
   async applyActions(messageIds: string[], actions: MailAction[]): Promise<void> {

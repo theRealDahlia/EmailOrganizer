@@ -8,6 +8,17 @@ export interface ActivityEntry {
   undone: boolean
 }
 
+/** Overview of the scanned inbox, plus whether every inbox message was scanned. */
+export type OverviewResult = Overview & { inboxTotal: number; complete: boolean }
+
+export interface ScanProgress {
+  phase: 'listing' | 'fetching' | 'done'
+  /** new messages downloaded so far */
+  done: number
+  /** new messages to download in total (already-cached ones are not counted) */
+  total: number
+}
+
 export type StorageResult =
   | { status: 'ok'; quota: StorageQuota }
   | { status: 'needsReconnect' }
@@ -35,7 +46,11 @@ export interface AccountStatus {
 
 /** The only surface the renderer can reach. Implemented in main, exposed through preload. */
 export interface OrganizerApi {
-  overview(refresh?: boolean): Promise<Overview>
+  overview(refresh?: boolean): Promise<OverviewResult>
+  /** Subscribe to scan progress; returns an unsubscribe function. */
+  onScanProgress(cb: (p: ScanProgress) => void): () => void
+  /** Stop the current scan. What was scanned is kept and the next scan resumes from there. */
+  cancelScan(): Promise<void>
   accountStatus(): Promise<AccountStatus>
   storage(): Promise<StorageResult>
   saveGoogleCredentials(clientId: string, clientSecret: string): Promise<void>

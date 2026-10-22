@@ -1,9 +1,11 @@
 import { useEffect, useState } from 'react'
 import { parseListUnsubscribe, type Subscription } from '@organizer/core'
+import type { ScanProgress } from '../../shared'
+import { ScanProgressPanel } from './ScanProgressPanel'
 
 const api = window.organizer
 
-export function SubscriptionsTab({ onGoToRules }: { onGoToRules: () => void }) {
+export function SubscriptionsTab({ progress, onCancel, onGoToRules }: { progress: ScanProgress | null; onCancel: () => void; onGoToRules: () => void }) {
   const [subs, setSubs] = useState<Subscription[] | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [confirming, setConfirming] = useState<string | null>(null)
@@ -24,7 +26,7 @@ export function SubscriptionsTab({ onGoToRules }: { onGoToRules: () => void }) {
   }
 
   if (error && !subs) return <div className="notice"><p className="error">{error}</p><button className="btn" onClick={load}>Try again</button></div>
-  if (!subs) return <p className="muted">Looking for subscriptions…</p>
+  if (!subs) return <ScanProgressPanel progress={progress} onCancel={onCancel} />
 
   return (
     <>

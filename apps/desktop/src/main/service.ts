@@ -1,12 +1,19 @@
 import {
-  StorageScopeError, buildOverview, buildSubscriptions, categorize, inverseActions, parseListUnsubscribe, planChanges, validateRule,
-  type MailMessage, type MailProvider, type Rule, type Subscription, type UnsubscribeTargets,
+  StorageScopeError, applyActionsToMessage, buildOverview, buildSubscriptions, categorize, inverseActions, parseListUnsubscribe, planChanges, validateRule,
+  type MailAction, type MailMessage, type MailProvider, type Rule, type Subscription, type UnsubscribeTargets,
 } from '@organizer/core'
-import type { ActivityEntry, PreviewResult, StorageResult } from '../shared'
+import type { ActivityEntry, OverviewResult, PreviewResult, ScanProgress, StorageResult } from '../shared'
 import type { Store, UndoStep } from './db'
 
-/** Cap on how much of the inbox is scanned per session (most recent first). */
-const MAX_MESSAGES = 200
+/** New messages are downloaded and saved in chunks of this size, so progress survives a cancel or crash. */
+const FETCH_CHUNK = 200
+
+interface ScanData {
+  provider: MailProvider
+  messages: MailMessage[]
+  inboxTotal: number
+  complete: boolean
+}
 
 const DEFAULT_RULES: Rule[] = [
   {
@@ -23,37 +30,106 @@ const DEFAULT_RULES: Rule[] = [
 
 /** App logic, kept independent of Electron so it can be tested and reused. */
 export class OrganizerService {
-  private cache: { provider: MailProvider; messages: MailMessage[] } | null = null
+  private cache: ScanData | null = null
+  private scanning: { provider: MailProvider; promise: Promise<ScanData>; abort: AbortController } | null = null
 
-  constructor(private getProvider: () => MailProvider, private store: Store) {
+  constructor(
+    private getProvider: () => MailProvider,
+    private store: Store,
+    private onProgress: (p: ScanProgress) => void = () => {},
+  ) {
     if (store.listRules().length === 0) DEFAULT_RULES.forEach((r) => store.saveRule(r))
   }
 
-  /** Drop cached messages, e.g. after the account changes or mail is modified. */
+  /** Forget the in-memory scan (e.g. the account changed or mail was modified). Cheap: the next scan only downloads what is new. */
   invalidate(): void {
+    this.scanning?.abort.abort()
+    this.scanning = null
     this.cache = null
   }
 
-  private async messages(): Promise<MailMessage[]> {
-    const provider = this.getProvider()
-    if (this.cache?.provider === provider) return this.cache.messages
-
-    const messages: MailMessage[] = []
-    let cursor: string | undefined
-    do {
-      const page = await provider.listMessages(cursor)
-      messages.push(...page.messages)
-      cursor = page.nextCursor
-    } while (cursor && messages.length < MAX_MESSAGES)
-
-    const categorized = messages.map((m) => ({ ...m, category: categorize(m) }))
-    this.cache = { provider, messages: categorized }
-    return categorized
+  /** Stop the running scan. Whatever has been scanned is kept, and the next scan resumes from there. */
+  cancelScan(): void {
+    this.scanning?.abort.abort()
   }
 
-  async overview(refresh = false) {
+  private async messages(): Promise<MailMessage[]> {
+    return (await this.scan()).messages
+  }
+
+  private scan(): Promise<ScanData> {
+    const provider = this.getProvider()
+    if (this.cache?.provider === provider) return Promise.resolve(this.cache)
+    if (this.scanning?.provider === provider) return this.scanning.promise
+
+    const abort = new AbortController()
+    const entry = { provider, abort, promise: undefined as unknown as Promise<ScanData> }
+    entry.promise = this.runScan(provider, abort.signal).then(
+      (data) => {
+        if (this.scanning === entry) { this.cache = data; this.scanning = null } // not if invalidated mid-scan
+        return data
+      },
+      (e) => {
+        if (this.scanning === entry) this.scanning = null
+        throw e
+      },
+    )
+    this.scanning = entry
+    return entry.promise
+  }
+
+  /**
+   * Incremental full-inbox scan. Listing ids is cheap, so each scan lists every inbox id and the unread
+   * ids, drops cached messages that left the inbox, and downloads metadata only for messages not yet cached.
+   */
+  private async runScan(provider: MailProvider, signal: AbortSignal): Promise<ScanData> {
+    const accountId = provider.accountId
+    const persist = accountId !== 'demo' // the demo mailbox lives in memory
+    this.onProgress({ phase: 'listing', done: 0, total: 0 })
+
+    const ids = await provider.listInboxIds(false)
+    const unread = new Set(await provider.listInboxIds(true))
+    const cached = persist ? this.store.loadMessages(accountId) : new Map<string, MailMessage>()
+
+    const present = new Set(ids)
+    const gone = [...cached.keys()].filter((id) => !present.has(id))
+    if (persist && gone.length) this.store.deleteMessages(accountId, gone)
+
+    const missing = ids.filter((id) => !cached.has(id)) // newest first, so a partial scan covers the most recent mail
+    const fetched = new Map<string, MailMessage>()
+    for (let i = 0; i < missing.length && !signal.aborted; i += FETCH_CHUNK) {
+      const got = await provider.getMessages(missing.slice(i, i + FETCH_CHUNK), { signal })
+      if (persist) this.store.upsertMessages(accountId, got)
+      for (const m of got) fetched.set(m.id, m)
+      this.onProgress({ phase: 'fetching', done: fetched.size, total: missing.length })
+    }
+
+    const messages: MailMessage[] = []
+    const readStateChanged: MailMessage[] = []
+    for (const id of ids) {
+      const m = fetched.get(id) ?? cached.get(id)
+      if (!m) continue
+      const current = m.isUnread === unread.has(id) ? m : { ...m, isUnread: unread.has(id) }
+      if (current !== m && cached.has(id)) readStateChanged.push(current) // read/unread changed outside this app
+      messages.push({ ...current, category: categorize(current) })
+    }
+    if (persist && readStateChanged.length) this.store.upsertMessages(accountId, readStateChanged)
+
+    this.onProgress({ phase: 'done', done: fetched.size, total: missing.length })
+    return { provider, messages, inboxTotal: ids.length, complete: !signal.aborted }
+  }
+
+  async overview(refresh = false): Promise<OverviewResult> {
     if (refresh) this.invalidate()
-    return buildOverview(await this.messages())
+    const data = await this.scan()
+    return { ...buildOverview(data.messages), inboxTotal: data.inboxTotal, complete: data.complete }
+  }
+
+  /** Keep the on-disk copy in step with changes just made through the mail service. */
+  private updateCached(accountId: string, ids: string[], actions: MailAction[]): void {
+    if (accountId === 'demo' || ids.length === 0) return
+    const current = this.store.getMessages(accountId, ids)
+    this.store.upsertMessages(accountId, current.map((m) => applyActionsToMessage(m, actions)))
   }
 
   async storage(): Promise<StorageResult> {
@@ -137,7 +213,10 @@ export class OrganizerService {
       const inverse = inverseActions(byId.get(c.messageId)!, c.actions)
       if (inverse.length) undo.push({ messageIds: [c.messageId], actions: inverse })
     }
-    await this.getProvider().applyActions(changes.map((c) => c.messageId), rule.actions)
+    const provider = this.getProvider()
+    const ids = changes.map((c) => c.messageId)
+    await provider.applyActions(ids, rule.actions)
+    this.updateCached(provider.accountId, ids, rule.actions)
     this.invalidate()
     return this.store.addActivity(rule.name, changes.length, undo)
   }
@@ -145,7 +224,11 @@ export class OrganizerService {
   async undo(activityId: number): Promise<void> {
     const steps = this.store.takeUndo(activityId)
     if (!steps) throw new Error('Nothing to undo')
-    for (const s of steps) await this.getProvider().applyActions(s.messageIds, s.actions)
+    const provider = this.getProvider()
+    for (const s of steps) {
+      await provider.applyActions(s.messageIds, s.actions)
+      this.updateCached(provider.accountId, s.messageIds, s.actions)
+    }
     this.invalidate()
   }
 }

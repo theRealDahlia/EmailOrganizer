@@ -151,3 +151,20 @@ export function validateRule(rule: Rule): string[] {
   }
   return problems
 }
+
+/** What a message looks like after `action`, mirroring what the mail service does. */
+export function applyActionToMessage(m: MailMessage, a: MailAction): MailMessage {
+  const without = (label: string) => m.labels.filter((l) => l !== label)
+  switch (a.type) {
+    case 'archive': return { ...m, labels: without('INBOX') }
+    case 'trash': return { ...m, labels: [...without('INBOX'), ...(m.labels.includes('TRASH') ? [] : ['TRASH'])] }
+    case 'markRead': return { ...m, isUnread: false }
+    case 'markUnread': return { ...m, isUnread: true }
+    case 'removeLabel': return { ...m, labels: without(a.label) }
+    case 'addLabel': return m.labels.includes(a.label) ? m : { ...m, labels: [...m.labels, a.label] }
+  }
+}
+
+export function applyActionsToMessage(m: MailMessage, actions: MailAction[]): MailMessage {
+  return actions.reduce(applyActionToMessage, m)
+}

@@ -1,5 +1,5 @@
 import Database from 'better-sqlite3'
-import type { MailAction, Rule } from '@organizer/core'
+import type { MailAction, MailMessage, Rule } from '@organizer/core'
 import type { ActivityEntry } from '../shared'
 
 export interface UndoStep {
@@ -15,6 +15,12 @@ export class Store {
     this.db.pragma('journal_mode = WAL')
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS rules (id TEXT PRIMARY KEY, position INTEGER NOT NULL, json TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS messages (
+        account_id TEXT NOT NULL,
+        id TEXT NOT NULL,
+        json TEXT NOT NULL,
+        PRIMARY KEY (account_id, id)
+      );
       CREATE TABLE IF NOT EXISTS activity (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         at TEXT NOT NULL,
@@ -61,6 +67,38 @@ export class Store {
     if (!row || row.undone) return null
     this.db.prepare('UPDATE activity SET undone = 1 WHERE id = ?').run(id)
     return JSON.parse(row.undo_json) as UndoStep[]
+  }
+
+  /** Cached message metadata for one account (headers only, never message bodies). */
+  loadMessages(accountId: string): Map<string, MailMessage> {
+    const rows = this.db.prepare('SELECT id, json FROM messages WHERE account_id = ?').all(accountId) as { id: string; json: string }[]
+    return new Map(rows.map((r) => [r.id, JSON.parse(r.json) as MailMessage]))
+  }
+
+  getMessages(accountId: string, ids: string[]): MailMessage[] {
+    const out: MailMessage[] = []
+    for (let i = 0; i < ids.length; i += 500) {
+      const chunk = ids.slice(i, i + 500)
+      const rows = this.db
+        .prepare(`SELECT json FROM messages WHERE account_id = ? AND id IN (${chunk.map(() => '?').join(',')})`)
+        .all(accountId, ...chunk) as { json: string }[]
+      out.push(...rows.map((r) => JSON.parse(r.json) as MailMessage))
+    }
+    return out
+  }
+
+  upsertMessages(accountId: string, messages: MailMessage[]): void {
+    const stmt = this.db.prepare('INSERT OR REPLACE INTO messages (account_id, id, json) VALUES (?, ?, ?)')
+    this.db.transaction(() => messages.forEach((m) => stmt.run(accountId, m.id, JSON.stringify(m))))()
+  }
+
+  deleteMessages(accountId: string, ids: string[]): void {
+    const stmt = this.db.prepare('DELETE FROM messages WHERE account_id = ? AND id = ?')
+    this.db.transaction(() => ids.forEach((id) => stmt.run(accountId, id)))()
+  }
+
+  clearMessages(accountId: string): void {
+    this.db.prepare('DELETE FROM messages WHERE account_id = ?').run(accountId)
   }
 
   close(): void {
