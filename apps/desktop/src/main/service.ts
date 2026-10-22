@@ -1,8 +1,8 @@
 import {
-  buildOverview, buildSubscriptions, categorize, inverseActions, parseListUnsubscribe, planChanges, validateRule,
+  StorageScopeError, buildOverview, buildSubscriptions, categorize, inverseActions, parseListUnsubscribe, planChanges, validateRule,
   type MailMessage, type MailProvider, type Rule, type Subscription, type UnsubscribeTargets,
 } from '@organizer/core'
-import type { ActivityEntry, PreviewResult } from '../shared'
+import type { ActivityEntry, PreviewResult, StorageResult } from '../shared'
 import type { Store, UndoStep } from './db'
 
 /** Cap on how much of the inbox is scanned per session (most recent first). */
@@ -54,6 +54,17 @@ export class OrganizerService {
   async overview(refresh = false) {
     if (refresh) this.invalidate()
     return buildOverview(await this.messages())
+  }
+
+  async storage(): Promise<StorageResult> {
+    const provider = this.getProvider()
+    if (!provider.getStorageQuota) return { status: 'error', message: 'Storage usage isn’t available for this account.' }
+    try {
+      return { status: 'ok', quota: await provider.getStorageQuota() }
+    } catch (e) {
+      if (e instanceof StorageScopeError) return { status: 'needsReconnect' }
+      return { status: 'error', message: e instanceof Error ? e.message : String(e) }
+    }
   }
 
   saveRule(rule: Rule): void {

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import type { Overview, Rule } from '@organizer/core'
 import type { AccountStatus, ActivityEntry, PreviewResult } from '../../shared'
 import { RuleEditor } from './RuleEditor'
+import { StorageMeter } from './StorageMeter'
 import { SubscriptionsTab } from './SubscriptionsTab'
 
 type Tab = 'overview' | 'subscriptions' | 'rules' | 'activity' | 'accounts'
@@ -266,6 +267,7 @@ export function App() {
       {tab === 'rules' && <RulesTab onApplied={() => refresh()} />}
       {tab === 'activity' && <ActivityTab onUndone={() => refresh()} />}
       {tab === 'accounts' && <AccountsTab status={status} onChanged={accountChanged} />}
+      <StorageMeter refreshKey={`${status?.mode}:${status?.email}:${overview?.total}`} onReconnect={() => setTab('accounts')} />
     </div>
   )
 }

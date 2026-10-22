@@ -12,6 +12,7 @@ let store: Store
 function registerIpc(service: OrganizerService, accounts: AccountManager) {
   ipcMain.handle('overview', (_e, refresh?: boolean) => service.overview(refresh))
   ipcMain.handle('accountStatus', () => accounts.status())
+  ipcMain.handle('storage', () => service.storage())
   ipcMain.handle('saveGoogleCredentials', (_e, id: string, secret: string) => accounts.saveCredentials(id, secret))
   ipcMain.handle('connectGmail', async () => { await accounts.connect(); service.invalidate() })
   ipcMain.handle('disconnect', async () => { await accounts.disconnect(); service.invalidate() })

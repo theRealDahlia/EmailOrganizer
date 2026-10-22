@@ -54,3 +54,8 @@ nav { flex-wrap: wrap; }
 
 .notice.danger { border-color: var(--danger); }
 button.btn.danger { background: var(--danger); color: #fff; border-color: var(--danger); }
+
+footer.storage { margin-top: 32px; padding-top: 16px; border-top: 1px solid var(--line); font-size: 13px; max-width: 320px; }
+.meter { height: 8px; background: var(--line); border-radius: 4px; overflow: hidden; margin-bottom: 8px; }
+.meter i { display: block; height: 100%; background: var(--muted); border-radius: 4px; }
+.meter i.high { background: var(--danger); }

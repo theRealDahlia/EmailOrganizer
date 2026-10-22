@@ -46,9 +46,20 @@ export interface MailPage {
   nextCursor?: string
 }
 
+export interface StorageQuota {
+  /** Total used across Gmail, Drive and Photos (what Gmail's footer shows) */
+  usedBytes: number
+  /** Absent for accounts with unlimited storage */
+  limitBytes?: number
+  driveBytes: number
+  driveTrashBytes: number
+}
+
 /** Everything the app needs from a mail service. Gmail, Graph and IMAP each implement this. */
 export interface MailProvider {
   readonly id: string
   listMessages(cursor?: string): Promise<MailPage>
   applyActions(messageIds: string[], actions: MailAction[]): Promise<void>
+  /** Account-wide storage; providers that can't report it omit this. */
+  getStorageQuota?(): Promise<StorageQuota>
 }

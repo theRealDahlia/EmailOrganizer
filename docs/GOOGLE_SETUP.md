@@ -10,6 +10,10 @@ Email Organizer talks to Gmail directly from your computer, so it needs an OAuth
 1. Open <https://console.cloud.google.com/apis/library/gmail.googleapis.com> (with your project selected).
 2. Click **Enable**.
 
+## 2b. Enable the Google Drive API (for the storage meter)
+Gmail's own API doesn't report storage. The "72% of 15 GB used" figure comes from the Drive API, because Gmail, Drive and Photos share one quota.
+1. Open <https://console.cloud.google.com/apis/library/drive.googleapis.com> and click **Enable**.
+
 ## 3. Configure the consent screen (Google Auth Platform)
 1. Open <https://console.cloud.google.com/auth/overview> and click **Get started**.
 2. **App name:** `Email Organizer`. **User support email:** your email. → Next.
@@ -17,7 +21,7 @@ Email Organizer talks to Gmail directly from your computer, so it needs an OAuth
 4. **Contact information:** your email → Next → agree to the policy → **Create**.
 5. Left menu → **Audience**. Leave **Publishing status: Testing**, then under **Test users** click **Add users** and add the Gmail address(es) you'll connect (e.g. your own). Save.
 6. Left menu → **Data Access** → **Add or remove scopes** → find and tick
-   `https://www.googleapis.com/auth/gmail.modify` (if it isn't listed, paste it into "Manually add scopes") → **Update** → **Save**.
+   `https://www.googleapis.com/auth/gmail.modify` **and** `https://www.googleapis.com/auth/drive.appdata` (if they aren't listed, paste them into "Manually add scopes") → **Update** → **Save**. `drive.appdata` is used only to read the storage quota; it gives no access to your Drive files. Google labels each scope's sensitivity on this page, so check it there.
 
 ## 4. Create the OAuth client
 1. Left menu → **Clients** → **Create client**.
@@ -52,3 +56,6 @@ Before strangers can use it:
 - **Testing mode** allows only the test users you list (max 100) and expires sign-ins weekly.
 - To open it to everyone, publish the consent screen and pass Google's **OAuth verification**. `gmail.modify` is a *restricted* scope, so this also requires an annual third-party security assessment (CASA), a hosted privacy policy, and a verified domain. That is why the landing page matters. Budget weeks and, for the assessment, real money.
 - Google treats a desktop app's client secret as non-confidential, but anyone can extract it from the installed app. It identifies the app; it does not protect users' mail.
+
+## Adding the storage permission to an existing sign-in
+If you connected before the storage meter existed, the meter shows **Reconnect Google**. Click it, then **Reconnect** in the Accounts tab, and approve the extra permission.

@@ -1,8 +1,10 @@
 import { AuthExpiredError } from './oauth'
-import type { Address, MailAction, MailMessage, MailPage, MailProvider } from './types'
+import { StorageScopeError, parseStorageQuota } from './storage'
+import type { Address, MailAction, MailMessage, MailPage, MailProvider, StorageQuota } from './types'
 
 const API = 'https://gmail.googleapis.com/gmail/v1/users/me'
 const METADATA_HEADERS = ['From', 'Subject', 'List-Unsubscribe', 'List-Unsubscribe-Post']
+const DRIVE_ABOUT = 'https://www.googleapis.com/drive/v3/about'
 const BATCH_MODIFY_LIMIT = 1000
 const FETCH_CONCURRENCY = 4
 const MAX_RETRIES = 5
@@ -58,6 +60,16 @@ export class GmailProvider implements MailProvider {
   async getProfileEmail(): Promise<string> {
     const p = await this.request<{ emailAddress: string }>('/profile')
     return p.emailAddress
+  }
+
+  /** Reads the account's storage quota via the Drive API (the same figure Gmail's footer shows). */
+  async getStorageQuota(): Promise<StorageQuota> {
+    try {
+      return parseStorageQuota(await this.request<unknown>(`${DRIVE_ABOUT}?fields=storageQuota`))
+    } catch (e) {
+      if (e instanceof GmailApiError && e.status === 403 && /insufficient/i.test(e.message)) throw new StorageScopeError()
+      throw e
+    }
   }
 
   async listMessages(cursor?: string): Promise<MailPage> {
@@ -167,7 +179,7 @@ export class GmailProvider implements MailProvider {
     let forceRefresh = false
     for (let attempt = 0; ; attempt++) {
       const token = await this.opts.getAccessToken(forceRefresh)
-      const res = await this.fetchImpl(`${API}${path}`, {
+      const res = await this.fetchImpl(path.startsWith('https://') ? path : `${API}${path}`, {
         ...init,
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', ...init.headers },
       })

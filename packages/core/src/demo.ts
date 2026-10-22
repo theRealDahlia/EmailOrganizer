@@ -1,4 +1,4 @@
-import type { MailAction, MailMessage, MailPage, MailProvider } from './types'
+import type { MailAction, MailMessage, MailPage, MailProvider, StorageQuota } from './types'
 
 const SENDERS = [
   { name: 'Daily Digest', email: 'news@dailydigest.example', subject: 'Your morning briefing', unsub: true },
@@ -34,6 +34,11 @@ export class DemoProvider implements MailProvider {
         oneClickUnsubscribe: s.unsub && s.email.startsWith('news@'),
       }
     })
+  }
+
+  async getStorageQuota(): Promise<StorageQuota> {
+    const GB = 1024 ** 3
+    return { usedBytes: 10.8 * GB, limitBytes: 15 * GB, driveBytes: 2.1 * GB, driveTrashBytes: 0.2 * GB }
   }
 
   async listMessages(): Promise<MailPage> {

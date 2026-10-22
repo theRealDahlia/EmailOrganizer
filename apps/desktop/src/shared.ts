@@ -1,4 +1,4 @@
-import type { MailMessage, Overview, PlannedChange, Rule, Subscription } from '@organizer/core'
+import type { MailMessage, Overview, PlannedChange, Rule, StorageQuota, Subscription } from '@organizer/core'
 
 export interface ActivityEntry {
   id: number
@@ -7,6 +7,11 @@ export interface ActivityEntry {
   messageCount: number
   undone: boolean
 }
+
+export type StorageResult =
+  | { status: 'ok'; quota: StorageQuota }
+  | { status: 'needsReconnect' }
+  | { status: 'error'; message: string }
 
 export type UnsubscribeMethod = 'oneClick' | 'openLink' | 'openMail'
 
@@ -32,6 +37,7 @@ export interface AccountStatus {
 export interface OrganizerApi {
   overview(refresh?: boolean): Promise<Overview>
   accountStatus(): Promise<AccountStatus>
+  storage(): Promise<StorageResult>
   saveGoogleCredentials(clientId: string, clientSecret: string): Promise<void>
   connectGmail(): Promise<void>
   disconnect(): Promise<void>

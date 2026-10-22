@@ -3,7 +3,11 @@
 export const GOOGLE_AUTH_URL = 'https://accounts.google.com/o/oauth2/v2/auth'
 export const GOOGLE_TOKEN_URL = 'https://oauth2.googleapis.com/token'
 export const GOOGLE_REVOKE_URL = 'https://oauth2.googleapis.com/revoke'
-export const GMAIL_SCOPES = ['https://www.googleapis.com/auth/gmail.modify']
+export const GMAIL_SCOPES = [
+  'https://www.googleapis.com/auth/gmail.modify',
+  // Used only to read the storage quota (Drive API about.get); it grants no access to the user's Drive files.
+  'https://www.googleapis.com/auth/drive.appdata',
+]
 
 export interface OAuthClient {
   clientId: string

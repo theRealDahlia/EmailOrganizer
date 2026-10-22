@@ -6,6 +6,7 @@ const call = (channel: string) => (...args: unknown[]) => ipcRenderer.invoke(cha
 const api: OrganizerApi = {
   overview: call('overview') as OrganizerApi['overview'],
   accountStatus: call('accountStatus') as OrganizerApi['accountStatus'],
+  storage: call('storage') as OrganizerApi['storage'],
   saveGoogleCredentials: call('saveGoogleCredentials') as OrganizerApi['saveGoogleCredentials'],
   connectGmail: call('connectGmail') as OrganizerApi['connectGmail'],
   disconnect: call('disconnect') as OrganizerApi['disconnect'],
