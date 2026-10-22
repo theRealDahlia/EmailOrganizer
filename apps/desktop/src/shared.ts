@@ -19,10 +19,14 @@ export type OverviewResult = Overview & {
 
 export interface ScanProgress {
   phase: 'listing' | 'fetching' | 'done'
-  /** listing: inbox ids found so far; fetching: new messages downloaded so far */
+  /** listing: inbox ids found so far; fetching: inbox messages downloaded so far, including earlier scans */
   done: number
-  /** new messages to download in total (already-cached ones are not counted) */
+  /** listing: unused; fetching: inbox messages in total */
   total: number
+  /** messages saved by earlier scans that this one did not need to download again */
+  alreadyHad?: number
+  /** mail that arrived since the last scan (only known when resuming from a checkpoint) */
+  arrived?: number
   /** Google asked the app to slow down and it is waiting before retrying */
   throttled?: boolean
   /** epoch ms when this scan began, so the UI's clock survives tab switches */

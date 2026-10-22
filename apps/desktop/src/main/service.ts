@@ -185,6 +185,7 @@ export class OrganizerService {
     let ids: string[] | null = null
     let unreadNow: (id: string) => boolean = () => false
     let resumed = false
+    let arrivedCount: number | undefined
     if (saved && provider.listChanges && Date.now() - saved.listedAt < FULL_RELIST_AFTER_MS) {
       report({ phase: 'listing', done: 0, total: 0, resumed: true })
       const changes = await provider.listChanges(saved.historyId, { onWait: () => report({ phase: 'listing', done: 0, total: 0, resumed: true, throttled: true }) })
@@ -195,6 +196,7 @@ export class OrganizerService {
         ids = [...arrived.reverse(), ...keep] // history lists oldest first; new mail goes on the front
         unreadNow = (id) => changes.unread.get(id) ?? cached.get(id)?.isUnread ?? false
         resumed = true
+        arrivedCount = arrived.length
         if (persist) this.store.saveScanState(accountId, { historyId: changes.historyId, listedAt: saved.listedAt, ids })
       }
     }
@@ -233,8 +235,11 @@ export class OrganizerService {
     if (persist && readStateChanged.length) this.store.upsertMessages(accountId, readStateChanged)
 
     const missing = ids.filter((id) => !cached.has(id)) // newest first, so a partial scan covers the most recent mail
+    const have = view.length // already downloaded by earlier scans, and still in the inbox
+    const total = ids.length
+    const detail = { alreadyHad: have || undefined, arrived: arrivedCount }
     let processed = 0 // messages handled so far, including any that vanished before they could be fetched
-    if (missing.length) report({ phase: 'fetching', done: 0, total: missing.length }) // show the bar right away
+    if (missing.length) report({ phase: 'fetching', done: have, total, ...detail }) // show the bar right away, already part-full when resuming
     for (let i = 0; i < missing.length && !signal.aborted; i += FETCH_CHUNK) {
       const chunk = missing.slice(i, i + FETCH_CHUNK)
       let lastEmit = 0
@@ -244,17 +249,17 @@ export class OrganizerService {
           const now = Date.now()
           if (now - lastEmit < 200) return // at most ~5 updates a second
           lastEmit = now
-          report({ phase: 'fetching', done: processed + n, total: missing.length })
+          report({ phase: 'fetching', done: have + processed + n, total, ...detail })
         },
-        onWait: () => report({ phase: 'fetching', done: processed, total: missing.length, throttled: true }),
+        onWait: () => report({ phase: 'fetching', done: have + processed, total, throttled: true, ...detail }),
       })
       if (persist) this.store.upsertMessages(accountId, got)
       for (const m of got) view.push({ ...m, category: categorize(m) })
       processed += chunk.length
-      report({ phase: 'fetching', done: processed, total: missing.length })
+      report({ phase: 'fetching', done: have + processed, total, ...detail })
     }
 
-    report({ phase: 'done', done: processed, total: missing.length, resumed })
+    report({ phase: 'done', done: have + processed, total, resumed, ...detail })
     return { provider, messages: view, inboxTotal: ids.length, complete: !signal.aborted }
   }
 

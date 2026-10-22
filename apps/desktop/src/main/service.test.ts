@@ -133,7 +133,7 @@ describe('scan progress', () => {
     const events: ScanProgress[] = []
     await new OrganizerService(() => provider, store, (p) => events.push(p)).overview()
     expect(events.some((e) => e.phase === 'fetching')).toBe(false)
-    expect(events.at(-1)).toMatchObject({ phase: 'done', total: 0 })
+    expect(events.at(-1)).toMatchObject({ phase: 'done', done: 20, total: 20, alreadyHad: 20 }) // everything was already downloaded
   })
 })
 
@@ -241,6 +241,51 @@ describe('search-based cleanup', () => {
     const { service } = setup(10)
     expect(() => service.saveCleanupRule({ ...oldPromos, id: 'x', filters: {} })).toThrow(/whole inbox/)
     expect(() => service.saveCleanupRule({ ...oldPromos, id: 'y', filters: { olderThan: { value: 2, unit: 'y' } }, actions: [{ type: 'trash' }] })).toThrow(/Trash/)
+  })
+})
+
+describe('progress after a stop', () => {
+  it('counts what was already downloaded, so the bar resumes part-full', async () => {
+    const provider = new HistoryProvider(450)
+    const store = new FakeStore()
+    const first = new OrganizerService(() => provider, store as unknown as Store)
+    provider.onFetch = () => first.cancelScan()
+    const stopped = await first.overview()
+    provider.onFetch = () => {}
+
+    const events: ScanProgress[] = []
+    await new OrganizerService(() => provider, store as unknown as Store, (p) => events.push(p)).overview()
+    const fetching = events.filter((e) => e.phase === 'fetching')
+    expect(fetching[0]).toMatchObject({ done: stopped.total, total: 450, alreadyHad: stopped.total }) // not 0 of 450-minus-something
+    expect(fetching.every((e) => e.total === 450 && e.done >= stopped.total)).toBe(true)
+    expect(events.at(-1)).toMatchObject({ phase: 'done', done: 450, total: 450 })
+  })
+
+  it('reports as new only mail that arrived since the last scan', async () => {
+    const provider = new HistoryProvider(120)
+    const store = new FakeStore()
+    await provider.elsewhere('demo-0', { inbox: false })
+    await provider.elsewhere('demo-1', { inbox: false })
+    await new OrganizerService(() => provider, store as unknown as Store).overview()
+
+    await provider.elsewhere('demo-0', { inbox: true }) // two messages arrive afterwards
+    await provider.elsewhere('demo-1', { inbox: true })
+    const events: ScanProgress[] = []
+    await new OrganizerService(() => provider, store as unknown as Store, (p) => events.push(p)).overview()
+    const first = events.find((e) => e.phase === 'fetching')!
+    expect(first).toMatchObject({ arrived: 2, alreadyHad: 118, done: 118, total: 120 })
+  })
+
+  it('does not call anything new when nothing arrived', async () => {
+    const provider = new HistoryProvider(60)
+    const store = new FakeStore()
+    const first = new OrganizerService(() => provider, store as unknown as Store)
+    provider.onFetch = () => first.cancelScan()
+    await first.overview()
+    provider.onFetch = () => {}
+    const events: ScanProgress[] = []
+    await new OrganizerService(() => provider, store as unknown as Store, (p) => events.push(p)).overview()
+    expect(events.find((e) => e.phase === 'fetching')!.arrived).toBe(0)
   })
 })
 

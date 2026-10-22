@@ -36,7 +36,7 @@ export function ScanStatus({ progress, compact, onCancel }: { progress: ScanProg
   const etaSeconds = fetching && perMinute ? ((progress.total - progress.done) / perMinute) * 60 : null
 
   let status: string
-  if (fetching) status = `${progress.done.toLocaleString()} of ${progress.total.toLocaleString()} new messages downloaded`
+  if (fetching) status = `${progress.done.toLocaleString()} of ${progress.total.toLocaleString()} messages downloaded`
   else if (progress?.phase === 'done') status = 'Finishing up…'
   else if (progress?.phase === 'listing' && progress.resumed) status = 'Checking for new mail since the last scan…'
   else if (progress && progress.done > 0) status = `Counting your inbox… ${progress.done.toLocaleString()} messages found so far`
@@ -77,6 +77,13 @@ export function ScanStatus({ progress, compact, onCancel }: { progress: ScanProg
           </span>
         )}
       </p>
+
+      {fetching && (progress.alreadyHad || progress.arrived) ? (
+        <p className="muted" style={{ margin: '0 0 6px' }}>
+          {progress.alreadyHad ? `Picked up where it left off: ${progress.alreadyHad.toLocaleString()} were already downloaded. ` : ''}
+          {progress.arrived ? `${progress.arrived.toLocaleString()} new since the last scan.` : progress.alreadyHad ? 'No new mail since the last scan.' : ''}
+        </p>
+      ) : null}
 
       {stopping && <p className="muted" style={{ margin: 0 }}>Finishing the current step, then saving your progress.</p>}
 
