@@ -10,6 +10,8 @@ const FETCH_CHUNK = 50
 /** A scan that finishes within this long (small inboxes, cached mail) is awaited instead of reported as in progress. */
 const SETTLE_MS = 400
 const RATE_WINDOW_MS = 90_000
+/** Gmail history is only reliable for about a week, so recount the whole inbox at least this often. */
+const FULL_RELIST_AFTER_MS = 6 * 24 * 3_600_000
 
 interface ScanData {
   provider: MailProvider
@@ -165,15 +167,41 @@ export class OrganizerService {
       this.onProgress(entry.last)
     }
 
-    report({ phase: 'listing', done: 0, total: 0 })
-    let listed = 0
-    const wait = () => report({ phase: 'listing', done: listed, total: 0, throttled: true })
-    const ids = await provider.listInboxIds(false, {
-      onProgress: (n) => { listed = n; report({ phase: 'listing', done: n, total: 0 }) },
-      onWait: wait,
-    })
-    const unread = new Set(await provider.listInboxIds(true, { onWait: wait }))
     const cached = persist ? this.store.loadMessages(accountId) : new Map<string, MailMessage>()
+    const saved = persist ? this.store.loadScanState(accountId) : null
+
+    // Resume: ask Gmail what changed since the checkpoint instead of counting the whole inbox again.
+    let ids: string[] | null = null
+    let unreadNow: (id: string) => boolean = () => false
+    let resumed = false
+    if (saved && provider.listChanges && Date.now() - saved.listedAt < FULL_RELIST_AFTER_MS) {
+      report({ phase: 'listing', done: 0, total: 0, resumed: true })
+      const changes = await provider.listChanges(saved.historyId, { onWait: () => report({ phase: 'listing', done: 0, total: 0, resumed: true, throttled: true }) })
+      if (changes) {
+        const known = new Set(saved.ids)
+        const arrived = [...changes.inbox].filter(([id, inInbox]) => inInbox && !known.has(id)).map(([id]) => id)
+        const keep = saved.ids.filter((id) => changes.inbox.get(id) !== false)
+        ids = [...arrived.reverse(), ...keep] // history lists oldest first; new mail goes on the front
+        unreadNow = (id) => changes.unread.get(id) ?? cached.get(id)?.isUnread ?? false
+        resumed = true
+        if (persist) this.store.saveScanState(accountId, { historyId: changes.historyId, listedAt: saved.listedAt, ids })
+      }
+    }
+
+    // Otherwise (first scan, expired checkpoint, or a stale listing) count the inbox in full.
+    if (!ids) {
+      report({ phase: 'listing', done: 0, total: 0 })
+      const historyId = provider.getHistoryId ? await provider.getHistoryId() : null // taken before listing, so changes made meanwhile are caught next time
+      let listed = 0
+      const wait = () => report({ phase: 'listing', done: listed, total: 0, throttled: true })
+      ids = await provider.listInboxIds(false, {
+        onProgress: (n) => { listed = n; report({ phase: 'listing', done: n, total: 0 }) },
+        onWait: wait,
+      })
+      const unread = new Set(await provider.listInboxIds(true, { onWait: wait }))
+      unreadNow = (id) => unread.has(id)
+      if (persist && historyId) this.store.saveScanState(accountId, { historyId, listedAt: Date.now(), ids })
+    }
 
     const present = new Set(ids)
     const gone = [...cached.keys()].filter((id) => !present.has(id))
@@ -185,7 +213,7 @@ export class OrganizerService {
     for (const id of ids) {
       const m = cached.get(id)
       if (!m) continue
-      const current = m.isUnread === unread.has(id) ? m : { ...m, isUnread: unread.has(id) }
+      const current = m.isUnread === unreadNow(id) ? m : { ...m, isUnread: unreadNow(id) }
       if (current !== m) readStateChanged.push(current) // read/unread changed outside this app
       view.push({ ...current, category: categorize(current) })
     }
@@ -215,7 +243,7 @@ export class OrganizerService {
       report({ phase: 'fetching', done: processed, total: missing.length })
     }
 
-    report({ phase: 'done', done: processed, total: missing.length })
+    report({ phase: 'done', done: processed, total: missing.length, resumed })
     return { provider, messages: view, inboxTotal: ids.length, complete: !signal.aborted }
   }
 

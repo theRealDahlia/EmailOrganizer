@@ -55,6 +55,16 @@ export interface StorageQuota {
   driveTrashBytes: number
 }
 
+/** What changed in the inbox since a checkpoint (net result per message). */
+export interface InboxChanges {
+  /** Checkpoint to store for next time */
+  historyId: string
+  /** id -> in the inbox now? Includes mail that arrived, was archived, trashed or deleted. */
+  inbox: Map<string, boolean>
+  /** id -> unread now? */
+  unread: Map<string, boolean>
+}
+
 /** Lets a long operation report that it is alive. */
 export interface ScanHooks {
   /** Called with a running count (ids listed so far, or messages processed so far). */
@@ -71,6 +81,13 @@ export interface MailProvider {
   /** Messages this provider can download per minute at its current pace, if it is rate limited. */
   readonly fetchesPerMinute?: number
   listMessages(cursor?: string): Promise<MailPage>
+  /** A checkpoint for the mailbox as it is right now, for use with `listChanges`. Optional. */
+  getHistoryId?(): Promise<string>
+  /**
+   * What changed in the inbox since `sinceHistoryId`, or null if that checkpoint is too old to use
+   * (the caller must then list the inbox in full). Optional.
+   */
+  listChanges?(sinceHistoryId: string, hooks?: ScanHooks): Promise<InboxChanges | null>
   /** Ids of every inbox message, newest first. Cheap: no message content is fetched. */
   listInboxIds(unreadOnly: boolean, opts?: ScanHooks): Promise<string[]>
   /**

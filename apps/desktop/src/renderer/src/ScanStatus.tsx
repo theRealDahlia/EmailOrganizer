@@ -38,6 +38,7 @@ export function ScanStatus({ progress, compact, onCancel }: { progress: ScanProg
   let status: string
   if (fetching) status = `${progress.done.toLocaleString()} of ${progress.total.toLocaleString()} new messages downloaded`
   else if (progress?.phase === 'done') status = 'Finishing up…'
+  else if (progress?.phase === 'listing' && progress.resumed) status = 'Checking for new mail since the last scan…'
   else if (progress && progress.done > 0) status = `Counting your inbox… ${progress.done.toLocaleString()} messages found so far`
   else status = 'Connecting to Gmail…'
 

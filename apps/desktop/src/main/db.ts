@@ -9,6 +9,14 @@ export interface UndoStep {
   restore?: MailMessage[]
 }
 
+/** Where a scan got to: the inbox's ids as of `historyId`, so a restart doesn't have to count the mailbox again. */
+export interface ScanState {
+  historyId: string
+  /** epoch ms of the last full listing of the inbox */
+  listedAt: number
+  ids: string[]
+}
+
 export class Store {
   private db: Database.Database
 
@@ -22,6 +30,12 @@ export class Store {
         id TEXT NOT NULL,
         json TEXT NOT NULL,
         PRIMARY KEY (account_id, id)
+      );
+      CREATE TABLE IF NOT EXISTS scan_state (
+        account_id TEXT PRIMARY KEY,
+        history_id TEXT NOT NULL,
+        listed_at INTEGER NOT NULL,
+        ids_json TEXT NOT NULL
       );
       CREATE TABLE IF NOT EXISTS activity (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -101,6 +115,18 @@ export class Store {
 
   clearMessages(accountId: string): void {
     this.db.prepare('DELETE FROM messages WHERE account_id = ?').run(accountId)
+    this.db.prepare('DELETE FROM scan_state WHERE account_id = ?').run(accountId)
+  }
+
+  loadScanState(accountId: string): ScanState | null {
+    const row = this.db.prepare('SELECT history_id, listed_at, ids_json FROM scan_state WHERE account_id = ?').get(accountId) as
+      { history_id: string; listed_at: number; ids_json: string } | undefined
+    return row ? { historyId: row.history_id, listedAt: row.listed_at, ids: JSON.parse(row.ids_json) as string[] } : null
+  }
+
+  saveScanState(accountId: string, state: ScanState): void {
+    this.db.prepare('INSERT OR REPLACE INTO scan_state (account_id, history_id, listed_at, ids_json) VALUES (?, ?, ?, ?)')
+      .run(accountId, state.historyId, state.listedAt, JSON.stringify(state.ids))
   }
 
   close(): void {

@@ -29,6 +29,8 @@ export interface ScanProgress {
   startedAt: number
   /** messages downloaded per minute: measured recently, or the provider's nominal pace at first */
   perMinute?: number
+  /** resuming from a saved checkpoint: only checking for new mail, not recounting the inbox */
+  resumed?: boolean
   /** the user pressed Stop; the scan is finishing its current step */
   stopping?: boolean
 }

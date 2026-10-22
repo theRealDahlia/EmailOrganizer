@@ -1,6 +1,6 @@
 import { AuthExpiredError } from './oauth'
 import { StorageScopeError, parseStorageQuota } from './storage'
-import type { Address, MailAction, ScanHooks, MailMessage, MailPage, MailProvider, StorageQuota } from './types'
+import type { Address, InboxChanges, MailAction, ScanHooks, MailMessage, MailPage, MailProvider, StorageQuota } from './types'
 
 const API = 'https://gmail.googleapis.com/gmail/v1/users/me'
 const METADATA_HEADERS = ['From', 'Subject', 'List-Unsubscribe', 'List-Unsubscribe-Post']
@@ -33,6 +33,37 @@ export function parseAddress(raw: string): Address {
   }
   const email = raw.trim()
   return { name: email, email }
+}
+
+interface HistoryMessage { id: string; labelIds?: string[] }
+interface HistoryRecord {
+  messagesAdded?: { message: HistoryMessage }[]
+  messagesDeleted?: { message: HistoryMessage }[]
+  labelsAdded?: { message: HistoryMessage; labelIds?: string[] }[]
+  labelsRemoved?: { message: HistoryMessage; labelIds?: string[] }[]
+}
+
+/** Folds history records (oldest first) into the net inbox and unread state of every message they mention. */
+export function reduceHistory(records: HistoryRecord[]): Pick<InboxChanges, 'inbox' | 'unread'> {
+  const inbox = new Map<string, boolean>()
+  const unread = new Map<string, boolean>()
+  for (const r of records) {
+    for (const { message: m } of r.messagesAdded ?? []) {
+      inbox.set(m.id, !!m.labelIds?.includes('INBOX'))
+      unread.set(m.id, !!m.labelIds?.includes('UNREAD'))
+    }
+    for (const { message: m } of r.messagesDeleted ?? []) inbox.set(m.id, false)
+    for (const { message: m, labelIds = [] } of r.labelsAdded ?? []) {
+      if (labelIds.includes('INBOX')) inbox.set(m.id, true)
+      if (labelIds.includes('TRASH') || labelIds.includes('SPAM')) inbox.set(m.id, false)
+      if (labelIds.includes('UNREAD')) unread.set(m.id, true)
+    }
+    for (const { message: m, labelIds = [] } of r.labelsRemoved ?? []) {
+      if (labelIds.includes('INBOX')) inbox.set(m.id, false)
+      if (labelIds.includes('UNREAD')) unread.set(m.id, false)
+    }
+  }
+  return { inbox, unread }
 }
 
 interface GmailLabel { id: string; name: string; type?: string }
@@ -82,6 +113,36 @@ export class GmailProvider implements MailProvider {
   async getProfileEmail(): Promise<string> {
     const p = await this.request<{ emailAddress: string }>('/profile')
     return p.emailAddress
+  }
+
+  /** The mailbox's current history id: a checkpoint for `listChanges`. Costs 1 quota unit. */
+  async getHistoryId(): Promise<string> {
+    return (await this.request<{ historyId: string }>('/profile')).historyId
+  }
+
+  /**
+   * What changed in the inbox since a checkpoint (history.list: 2 units a page, versus relisting the whole
+   * inbox). Returns null when Google no longer has history that far back, so the caller must relist.
+   */
+  async listChanges(sinceHistoryId: string, hooks: ScanHooks = {}): Promise<InboxChanges | null> {
+    const records: HistoryRecord[] = []
+    let historyId = sinceHistoryId
+    let pageToken: string | undefined
+    try {
+      do {
+        const q = new URLSearchParams({ startHistoryId: sinceHistoryId, maxResults: '500' })
+        for (const t of ['messageAdded', 'messageDeleted', 'labelAdded', 'labelRemoved']) q.append('historyTypes', t)
+        if (pageToken) q.set('pageToken', pageToken)
+        const page = await this.request<{ history?: HistoryRecord[]; nextPageToken?: string; historyId?: string }>(`/history?${q}`, {}, hooks.onWait)
+        records.push(...(page.history ?? []))
+        historyId = page.historyId ?? historyId
+        pageToken = page.nextPageToken
+      } while (pageToken)
+    } catch (e) {
+      if (e instanceof GmailApiError && e.status === 404) return null // checkpoint expired: a full sync is needed
+      throw e
+    }
+    return { historyId, ...reduceHistory(records) }
   }
 
   /** Reads the account's storage quota via the Drive API (the same figure Gmail's footer shows). */

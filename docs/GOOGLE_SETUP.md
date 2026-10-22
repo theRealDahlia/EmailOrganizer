@@ -72,7 +72,7 @@ Google's [usage limits](https://developers.google.com/workspace/gmail/api/refere
 
 What the app does about it:
 - The scan runs in the background, newest mail first, and the Overview, Subscriptions and rule previews work on what has been scanned so far.
-- Progress is saved, so stopping or quitting loses nothing. Later scans only download new mail.
+- Progress is saved, so stopping or quitting loses nothing. The app also saves a Gmail history checkpoint with the inbox's id list, so a restart asks Google "what changed since then?" (2 quota units) instead of counting the inbox again, and only downloads what is left plus any new mail. It recounts in full only if Google no longer has history that far back, or once a week as a safety net.
 - Actions are cheap: moving or labelling mail uses `batchModify` (50 units per 1,000 messages), so applying a rule to a whole inbox takes seconds once the mail is scanned.
 
 To check or raise the limit for your project: Cloud console → **APIs & Services → Gmail API → Quotas & System Limits**, then **Request a higher quota limit**. Google says approval isn't guaranteed and large increases take longer. Projects that used the Gmail API between November 2025 and April 2026 keep their earlier quotas; newer projects get the limits above.
