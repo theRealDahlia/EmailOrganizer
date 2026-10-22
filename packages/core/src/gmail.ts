@@ -1,6 +1,6 @@
 import { AuthExpiredError } from './oauth'
 import { StorageScopeError, parseStorageQuota } from './storage'
-import type { Address, MailAction, MailMessage, MailPage, MailProvider, StorageQuota } from './types'
+import type { Address, MailAction, ScanHooks, MailMessage, MailPage, MailProvider, StorageQuota } from './types'
 
 const API = 'https://gmail.googleapis.com/gmail/v1/users/me'
 const METADATA_HEADERS = ['From', 'Subject', 'List-Unsubscribe', 'List-Unsubscribe-Post']
@@ -91,7 +91,7 @@ export class GmailProvider implements MailProvider {
     return { messages, nextCursor: list.nextPageToken }
   }
 
-  async listInboxIds(unreadOnly: boolean): Promise<string[]> {
+  async listInboxIds(unreadOnly: boolean, hooks: ScanHooks = {}): Promise<string[]> {
     const ids: string[] = []
     let pageToken: string | undefined
     do {
@@ -99,27 +99,29 @@ export class GmailProvider implements MailProvider {
       q.append('labelIds', 'INBOX')
       if (unreadOnly) q.append('labelIds', 'UNREAD')
       if (pageToken) q.set('pageToken', pageToken)
-      const page = await this.request<{ messages?: { id: string }[]; nextPageToken?: string }>(`/messages?${q}`)
+      const page = await this.request<{ messages?: { id: string }[]; nextPageToken?: string }>(`/messages?${q}`, {}, hooks.onWait)
       for (const m of page.messages ?? []) ids.push(m.id)
+      hooks.onProgress?.(ids.length)
       pageToken = page.nextPageToken
     } while (pageToken && ids.length < MAX_INBOX_IDS)
     return ids
   }
 
-  async getMessages(ids: string[], opts: { signal?: AbortSignal } = {}): Promise<MailMessage[]> {
+  async getMessages(ids: string[], opts: ScanHooks & { signal?: AbortSignal } = {}): Promise<MailMessage[]> {
     await this.loadLabels()
     const out: (MailMessage | undefined)[] = new Array(ids.length)
     let next = 0
+    let processed = 0
     const worker = async () => {
       while (next < ids.length && !opts.signal?.aborted) {
         const i = next++
         try {
           await this.throttleFetch()
-          out[i] = this.toMessage(await this.getMetadata(ids[i]))
+          out[i] = this.toMessage(await this.getMetadata(ids[i], opts.onWait))
         } catch (e) {
-          if (e instanceof GmailApiError && e.status === 404) continue // deleted since it was listed
-          throw e
+          if (!(e instanceof GmailApiError && e.status === 404)) throw e // a 404 means deleted since it was listed
         }
+        opts.onProgress?.(++processed)
       }
     }
     await Promise.all(Array.from({ length: Math.min(FETCH_CONCURRENCY, ids.length) }, worker))
@@ -194,10 +196,10 @@ export class GmailProvider implements MailProvider {
     return created.id
   }
 
-  private async getMetadata(id: string): Promise<GmailMessageResource> {
+  private async getMetadata(id: string, onWait?: (ms: number) => void): Promise<GmailMessageResource> {
     const q = new URLSearchParams({ format: 'metadata' })
     METADATA_HEADERS.forEach((h) => q.append('metadataHeaders', h))
-    return this.request<GmailMessageResource>(`/messages/${encodeURIComponent(id)}?${q}`)
+    return this.request<GmailMessageResource>(`/messages/${encodeURIComponent(id)}?${q}`, {}, onWait)
   }
 
   private toMessage(r: GmailMessageResource): MailMessage {
@@ -218,7 +220,7 @@ export class GmailProvider implements MailProvider {
     }
   }
 
-  private async request<T = unknown>(path: string, init: RequestInit = {}): Promise<T> {
+  private async request<T = unknown>(path: string, init: RequestInit = {}, onWait?: (ms: number) => void): Promise<T> {
     let forceRefresh = false
     for (let attempt = 0; ; attempt++) {
       const token = await this.opts.getAccessToken(forceRefresh)
@@ -239,7 +241,9 @@ export class GmailProvider implements MailProvider {
           (res.status === 403 && (reasons.some((r) => /ratelimit/i.test(r)) || /quota exceeded|rate limit/i.test(message)))
         if ((rateLimited || res.status >= 500) && attempt < MAX_RETRIES) {
           const retryAfter = Number(res.headers.get('Retry-After'))
-          await this.sleep(Math.min(Math.max(retryAfter * 1000 || 0, 2000 * 2 ** attempt), 30_000))
+          const wait = Math.min(Math.max(retryAfter * 1000 || 0, 2000 * 2 ** attempt), 30_000)
+          onWait?.(wait)
+          await this.sleep(wait)
           continue
         }
         throw new GmailApiError(res.status, rateLimited ? 'Gmail is rate limiting requests. Wait a minute and try again.' : message)

@@ -87,8 +87,13 @@ export class OrganizerService {
     const persist = accountId !== 'demo' // the demo mailbox lives in memory
     this.onProgress({ phase: 'listing', done: 0, total: 0 })
 
-    const ids = await provider.listInboxIds(false)
-    const unread = new Set(await provider.listInboxIds(true))
+    let listed = 0
+    const wait = () => this.onProgress({ phase: 'listing', done: listed, total: 0, throttled: true })
+    const ids = await provider.listInboxIds(false, {
+      onProgress: (n) => { listed = n; this.onProgress({ phase: 'listing', done: n, total: 0 }) },
+      onWait: wait,
+    })
+    const unread = new Set(await provider.listInboxIds(true, { onWait: wait }))
     const cached = persist ? this.store.loadMessages(accountId) : new Map<string, MailMessage>()
 
     const present = new Set(ids)
@@ -97,11 +102,25 @@ export class OrganizerService {
 
     const missing = ids.filter((id) => !cached.has(id)) // newest first, so a partial scan covers the most recent mail
     const fetched = new Map<string, MailMessage>()
+    let processed = 0 // messages handled so far, including any that vanished before they could be fetched
+    if (missing.length) this.onProgress({ phase: 'fetching', done: 0, total: missing.length }) // show the bar right away
     for (let i = 0; i < missing.length && !signal.aborted; i += FETCH_CHUNK) {
-      const got = await provider.getMessages(missing.slice(i, i + FETCH_CHUNK), { signal })
+      const chunk = missing.slice(i, i + FETCH_CHUNK)
+      let lastEmit = 0
+      const got = await provider.getMessages(chunk, {
+        signal,
+        onProgress: (n) => {
+          const now = Date.now()
+          if (now - lastEmit < 200) return // at most ~5 updates a second
+          lastEmit = now
+          this.onProgress({ phase: 'fetching', done: processed + n, total: missing.length })
+        },
+        onWait: () => this.onProgress({ phase: 'fetching', done: processed, total: missing.length, throttled: true }),
+      })
       if (persist) this.store.upsertMessages(accountId, got)
       for (const m of got) fetched.set(m.id, m)
-      this.onProgress({ phase: 'fetching', done: fetched.size, total: missing.length })
+      processed += chunk.length
+      this.onProgress({ phase: 'fetching', done: processed, total: missing.length })
     }
 
     const messages: MailMessage[] = []
@@ -115,7 +134,7 @@ export class OrganizerService {
     }
     if (persist && readStateChanged.length) this.store.upsertMessages(accountId, readStateChanged)
 
-    this.onProgress({ phase: 'done', done: fetched.size, total: missing.length })
+    this.onProgress({ phase: 'done', done: processed, total: missing.length })
     return { provider, messages, inboxTotal: ids.length, complete: !signal.aborted }
   }
 

@@ -55,6 +55,14 @@ export interface StorageQuota {
   driveTrashBytes: number
 }
 
+/** Lets a long operation report that it is alive. */
+export interface ScanHooks {
+  /** Called with a running count (ids listed so far, or messages processed so far). */
+  onProgress?: (count: number) => void
+  /** Called when the service asked us to slow down and we are about to wait `ms` before retrying. */
+  onWait?: (ms: number) => void
+}
+
 /** Everything the app needs from a mail service. Gmail, Graph and IMAP each implement this. */
 export interface MailProvider {
   readonly id: string
@@ -62,12 +70,12 @@ export interface MailProvider {
   readonly accountId: string
   listMessages(cursor?: string): Promise<MailPage>
   /** Ids of every inbox message, newest first. Cheap: no message content is fetched. */
-  listInboxIds(unreadOnly: boolean): Promise<string[]>
+  listInboxIds(unreadOnly: boolean, opts?: ScanHooks): Promise<string[]>
   /**
    * Fetches metadata for the given ids, keeping their order and skipping messages that no longer exist.
    * Stops early (returning what it has) when `signal` is aborted.
    */
-  getMessages(ids: string[], opts?: { signal?: AbortSignal }): Promise<MailMessage[]>
+  getMessages(ids: string[], opts?: ScanHooks & { signal?: AbortSignal }): Promise<MailMessage[]>
   applyActions(messageIds: string[], actions: MailAction[]): Promise<void>
   /** Account-wide storage; providers that can't report it omit this. */
   getStorageQuota?(): Promise<StorageQuota>

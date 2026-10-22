@@ -89,3 +89,39 @@ describe('DemoProvider scan API', () => {
     expect((await d.getMessages(ids.slice(0, 2))).map((m) => m.id)).toEqual(ids.slice(0, 2))
   })
 })
+
+describe('progress hooks', () => {
+  it('reports ids listed so far, per page', async () => {
+    const f = (async (u: string) => (new URL(u).searchParams.get('pageToken')
+      ? json({ messages: [{ id: 'c' }] })
+      : json({ messages: [{ id: 'a' }, { id: 'b' }], nextPageToken: 'p2' }))) as unknown as typeof fetch
+    const counts: number[] = []
+    await provider(f).listInboxIds(false, { onProgress: (n) => counts.push(n) })
+    expect(counts).toEqual([2, 3])
+  })
+
+  it('reports each message processed, including ones that 404', async () => {
+    const f = (async (u: string) => {
+      const path = new URL(u).pathname
+      if (path.endsWith('/labels')) return json({ labels: [] })
+      return path.endsWith('/b') ? json({ error: { message: 'gone' } }, 404) : json(meta(path.split('/').pop()!))
+    }) as unknown as typeof fetch
+    const counts: number[] = []
+    await provider(f).getMessages(['a', 'b', 'c'], { onProgress: (n) => counts.push(n) })
+    expect(counts).toEqual([1, 2, 3])
+  })
+
+  it('tells the caller when it is waiting out a rate limit', async () => {
+    let n = 0
+    const quota = { error: { message: 'Quota exceeded', errors: [{ reason: 'rateLimitExceeded' }] } }
+    const f = (async (u: string) => {
+      const path = new URL(u).pathname
+      if (path.endsWith('/labels')) return json({ labels: [] })
+      return ++n < 3 ? json(quota, 403) : json(meta('a'))
+    }) as unknown as typeof fetch
+    const waits: number[] = []
+    const got = await provider(f).getMessages(['a'], { onWait: (ms) => waits.push(ms) })
+    expect(got).toHaveLength(1)
+    expect(waits).toEqual([2000, 4000])
+  })
+})

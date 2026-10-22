@@ -1,5 +1,5 @@
 import { applyActionsToMessage } from './rules'
-import type { MailAction, MailMessage, MailPage, MailProvider, StorageQuota } from './types'
+import type { ScanHooks, MailAction, MailMessage, MailPage, MailProvider, StorageQuota } from './types'
 
 const SENDERS = [
   { name: 'Daily Digest', email: 'news@dailydigest.example', subject: 'Your morning briefing', unsub: true },
@@ -47,11 +47,11 @@ export class DemoProvider implements MailProvider {
     return { messages: this.messages.map((m) => ({ ...m, labels: [...m.labels] })) }
   }
 
-  async listInboxIds(unreadOnly: boolean): Promise<string[]> {
+  async listInboxIds(unreadOnly: boolean, _hooks?: ScanHooks): Promise<string[]> {
     return this.messages.filter((m) => m.labels.includes('INBOX') && (!unreadOnly || m.isUnread)).map((m) => m.id)
   }
 
-  async getMessages(ids: string[], _opts?: { signal?: AbortSignal }): Promise<MailMessage[]> {
+  async getMessages(ids: string[], _opts?: ScanHooks & { signal?: AbortSignal }): Promise<MailMessage[]> {
     const byId = new Map(this.messages.map((m) => [m.id, m]))
     return ids.flatMap((id) => (byId.has(id) ? [{ ...byId.get(id)!, labels: [...byId.get(id)!.labels] }] : []))
   }

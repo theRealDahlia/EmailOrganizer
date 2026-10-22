@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { DemoProvider, type MailMessage, type Rule } from '@organizer/core'
 import type { Store } from './db'
+import type { ScanProgress } from '../shared'
 import { OrganizerService } from './service'
 
 /** In-memory stand-in for Store, so these tests don't need the Electron-built SQLite module. */
@@ -41,6 +42,32 @@ const setup = (count: number) => {
   const service = new OrganizerService(() => provider, store as unknown as Store)
   return { provider, store, service }
 }
+
+describe('scan progress', () => {
+  it('shows the bar immediately after listing, then counts up to the total', async () => {
+    const provider = new CountingProvider(450)
+    const events: ScanProgress[] = []
+    const service = new OrganizerService(() => provider, new FakeStore() as unknown as Store, (p) => events.push(p))
+    await service.overview()
+
+    const firstFetch = events.findIndex((e) => e.phase === 'fetching')
+    expect(events.slice(0, firstFetch).every((e) => e.phase === 'listing')).toBe(true)
+    expect(events[firstFetch]).toMatchObject({ phase: 'fetching', done: 0, total: 450 }) // before any download finishes
+    const done = events.filter((e) => e.phase === 'fetching').map((e) => e.done)
+    expect([...done].sort((a, b) => a - b)).toEqual(done) // never goes backwards
+    expect(events.at(-1)).toMatchObject({ phase: 'done', done: 450, total: 450 })
+  })
+
+  it('reports nothing to download when everything is cached', async () => {
+    const provider = new CountingProvider(20)
+    const store = new FakeStore() as unknown as Store
+    await new OrganizerService(() => provider, store).overview()
+    const events: ScanProgress[] = []
+    await new OrganizerService(() => provider, store, (p) => events.push(p)).overview()
+    expect(events.some((e) => e.phase === 'fetching')).toBe(false)
+    expect(events.at(-1)).toMatchObject({ phase: 'done', total: 0 })
+  })
+})
 
 describe('full-inbox scan', () => {
   it('scans past 200 messages and caches them', async () => {

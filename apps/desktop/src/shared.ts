@@ -13,10 +13,12 @@ export type OverviewResult = Overview & { inboxTotal: number; complete: boolean 
 
 export interface ScanProgress {
   phase: 'listing' | 'fetching' | 'done'
-  /** new messages downloaded so far */
+  /** listing: inbox ids found so far; fetching: new messages downloaded so far */
   done: number
   /** new messages to download in total (already-cached ones are not counted) */
   total: number
+  /** Google asked the app to slow down and it is waiting before retrying */
+  throttled?: boolean
 }
 
 export type StorageResult =
