@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import {
-  CLEANUP_PRESETS, GMAIL_TABS, buildQuery, describeFilters, validateCleanup,
+  CLEANUP_PRESETS, GMAIL_TABS, buildQuery, describeFilters, isBroadTrash, validateCleanup,
   type CleanupFilters, type CleanupRule, type MailAction,
 } from '@organizer/core'
 import type { CleanupPreview } from '../../shared'
@@ -24,6 +24,7 @@ function Editor({ initial, onSave, onCancel }: { initial: CleanupRule; onSave: (
   const [archive, setArchive] = useState(hasAction('archive'))
   const [trash, setTrash] = useState(hasAction('trash'))
   const [markRead, setMarkRead] = useState(hasAction('markRead'))
+  const [allowBroad, setAllowBroad] = useState(!!initial.allowBroad)
   const [problems, setProblems] = useState<string[]>([])
   const [saving, setSaving] = useState(false)
 
@@ -32,7 +33,8 @@ function Editor({ initial, onSave, onCancel }: { initial: CleanupRule; onSave: (
   if (trash) actions.push({ type: 'trash' })
   else if (archive) actions.push({ type: 'archive' })
   if (markRead) actions.push({ type: 'markRead' })
-  const rule: CleanupRule = { id: initial.id, name: name.trim(), filters: f, actions }
+  const rule: CleanupRule = { id: initial.id, name: name.trim(), filters: f, actions, ...(allowBroad && { allowBroad: true }) }
+  const broad = isBroadTrash({ filters: f, actions })
 
   const set = <K extends keyof CleanupFilters>(key: K, value: CleanupFilters[K] | '' | undefined) =>
     setF((cur) => {
@@ -89,6 +91,10 @@ function Editor({ initial, onSave, onCancel }: { initial: CleanupRule; onSave: (
               </select>
             </label>
           </div>
+          <div className="cond">
+            <label className="inline"><input type="checkbox" checked={!!f.keepStarred} onChange={(e) => set('keepStarred', e.target.checked)} /> Keep starred mail</label>
+            <label className="inline"><input type="checkbox" checked={!!f.keepImportant} onChange={(e) => set('keepImportant', e.target.checked)} /> Keep mail Gmail marks important</label>
+          </div>
           <details>
             <summary className="muted">Advanced: add your own Gmail search terms</summary>
             <input style={{ width: '100%', marginTop: 8 }} placeholder="e.g. from:(a OR b) -subject:receipt" value={f.extra ?? ''} onChange={(e) => set('extra', e.target.value)} spellCheck={false} />
@@ -103,6 +109,15 @@ function Editor({ initial, onSave, onCancel }: { initial: CleanupRule; onSave: (
           <label className="inline">Add label <input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="(optional)" /></label>
         </div>
 
+        {broad && (
+          <div className="notice danger">
+            <b>This rule can reach everyday mail.</b> With only age or read state as filters, it would move all matching mail to Trash, including receipts and personal mail. Starred mail is safest to keep, and you can undo for 30 days.
+            <label className="inline" style={{ marginTop: 8 }}>
+              <input type="checkbox" checked={allowBroad} onChange={(e) => setAllowBroad(e.target.checked)} />
+              <span><b>Include everyday mail.</b> I understand. I’ll be asked to type TRASH before it runs.</span>
+            </label>
+          </div>
+        )}
         <div className="muted">Gmail search: <code>{buildQuery(f, actions)}</code></div>
         {problems.length > 0 && <div className="error">{problems.map((p) => <div key={p}>{p}</div>)}</div>}
         <div className="actions">
@@ -121,6 +136,7 @@ export function CleanupTab({ onApplied }: { onApplied: () => void }) {
   const [busy, setBusy] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [done, setDone] = useState<string | null>(null)
+  const [typed, setTyped] = useState('')
 
   const load = () => api.cleanupRules().then(setRules)
   useEffect(() => { load() }, [])
@@ -159,7 +175,7 @@ export function CleanupTab({ onApplied }: { onApplied: () => void }) {
               <div className="muted">{describeFilters(rule.filters)} → {describeActions(rule.actions)}</div>
             </div>
             <div className="actions">
-              <button className="btn" disabled={!!busy} onClick={() => run(rule.id, async () => { setDone(null); setPreview({ rule, result: await api.previewCleanup(rule.id) }) })}>
+              <button className="btn" disabled={!!busy} onClick={() => run(rule.id, async () => { setDone(null); setTyped(''); setPreview({ rule, result: await api.previewCleanup(rule.id) }) })}>
                 {busy === rule.id ? 'Searching…' : 'Preview'}
               </button>
               <button className="btn" disabled={!!busy || !!editing} onClick={() => { setDone(null); setEditing(rule) }}>Edit</button>
@@ -195,14 +211,22 @@ export function CleanupTab({ onApplied }: { onApplied: () => void }) {
             </table>
           )}
           <p className="muted">Gmail search: <code>{preview.result.query}</code></p>
+          {isBroadTrash(preview.rule) && preview.result.count > 0 && (
+            <div className="form" style={{ marginBottom: 12 }}>
+              <label>
+                This rule can reach everyday mail. Look over the examples, then type <b>TRASH</b> to enable the button.
+                <input value={typed} onChange={(e) => setTyped(e.target.value)} placeholder="TRASH" autoComplete="off" spellCheck={false} style={{ maxWidth: 200 }} />
+              </label>
+            </div>
+          )}
           <div className="actions">
             <button
               className={trashes(preview.rule) ? 'btn danger' : 'btn primary'}
-              disabled={!!busy || preview.result.count === 0}
+              disabled={!!busy || preview.result.count === 0 || (isBroadTrash(preview.rule) && typed.trim().toUpperCase() !== 'TRASH')}
               onClick={() => run('apply', async () => {
                 const n = preview.result.count
-                if (trashes(preview.rule) && !window.confirm(`Move ${n.toLocaleString()} messages to Trash?\n\nYou can undo this from the Activity tab, and Gmail empties Trash after 30 days.`)) return
-                const entry = await api.applyCleanup(preview.rule.id, n)
+                if (trashes(preview.rule) && !isBroadTrash(preview.rule) && !window.confirm(`Move ${n.toLocaleString()} messages to Trash?\n\nYou can undo this from the Activity tab, and Gmail empties Trash after 30 days.`)) return
+                const entry = await api.applyCleanup(preview.rule.id, n, typed)
                 setPreview(null)
                 setDone(`Done: ${entry.messageCount.toLocaleString()} messages changed. You can undo it from the Activity tab.`)
                 onApplied()

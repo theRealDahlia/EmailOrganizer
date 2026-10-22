@@ -202,6 +202,41 @@ describe('search-based cleanup', () => {
     await expect(service.applyCleanup('c', count)).resolves.toMatchObject({ messageCount: count }) // the real count is fine
   })
 
+  describe('trashing by age alone (the "older than 9 months" rule)', () => {
+    const broad: CleanupRule = {
+      id: 'b', name: 'Old mail', filters: { olderThan: { value: 7, unit: 'd' }, keepStarred: true }, actions: [{ type: 'trash' }],
+    }
+
+    it('must be opted into when saved', () => {
+      const { service } = setup(50)
+      expect(() => service.saveCleanupRule(broad)).toThrow(/Include everyday mail/)
+      expect(() => service.saveCleanupRule({ ...broad, allowBroad: true })).not.toThrow()
+    })
+
+    it('needs the typed word TRASH to run, checked by the service itself', async () => {
+      const { service, provider } = setup(300)
+      service.saveCleanupRule({ ...broad, allowBroad: true })
+      const before = (await provider.listInboxIds(false)).length
+      const { count, query } = await service.previewCleanup('b')
+      expect(query).toBe('in:inbox older_than:7d -is:starred')
+      expect(count).toBeGreaterThan(0)
+
+      await expect(service.applyCleanup('b', count)).rejects.toThrow(/Type TRASH/)
+      await expect(service.applyCleanup('b', count, 'yes')).rejects.toThrow(/Type TRASH/)
+      expect((await provider.listInboxIds(false)).length).toBe(before) // nothing happened
+
+      await service.applyCleanup('b', count, 'trash')
+      expect((await provider.listInboxIds(false)).length).toBe(before - count)
+    })
+
+    it('does not ask for the word when the rule is specific', async () => {
+      const { service } = setup(300)
+      service.saveCleanupRule(oldPromos)
+      const { count } = await service.previewCleanup('c')
+      await expect(service.applyCleanup('c', count)).resolves.toBeTruthy()
+    })
+  })
+
   it('rejects unsafe or empty rules when saving', () => {
     const { service } = setup(10)
     expect(() => service.saveCleanupRule({ ...oldPromos, id: 'x', filters: {} })).toThrow(/whole inbox/)

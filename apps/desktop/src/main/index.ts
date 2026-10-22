@@ -28,7 +28,7 @@ function registerIpc(service: OrganizerService, accounts: AccountManager) {
   ipcMain.handle('saveCleanupRule', (_e, rule: CleanupRule) => service.saveCleanupRule(rule))
   ipcMain.handle('deleteCleanupRule', (_e, id: string) => service.deleteCleanupRule(id))
   ipcMain.handle('previewCleanup', (_e, id: string) => service.previewCleanup(id))
-  ipcMain.handle('applyCleanup', (_e, id: string, expected: number) => service.applyCleanup(id, expected))
+  ipcMain.handle('applyCleanup', (_e, id: string, expected: number, confirmation?: string) => service.applyCleanup(id, expected, confirmation))
   ipcMain.handle('subscriptions', () => service.subscriptions())
   ipcMain.handle('createArchiveRule', (_e, email: string) => service.createArchiveRule(email))
   ipcMain.handle('unsubscribe', async (_e, email: string, method: UnsubscribeMethod) => {

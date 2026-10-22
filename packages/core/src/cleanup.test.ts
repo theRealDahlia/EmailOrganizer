@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
-  CLEANUP_PRESETS, DemoProvider, GmailProvider, applyActionsToMessage, buildQuery, describeFilters,
+  CLEANUP_PRESETS, isBroadTrash, DemoProvider, GmailProvider, applyActionsToMessage, buildQuery, describeFilters,
   matchesGmailQuery, reverseCleanupActions, validateCleanup, type CleanupRule, type MailMessage,
 } from './index'
 
@@ -15,6 +15,12 @@ describe('buildQuery', () => {
     expect(buildQuery({ largerThanMB: 10, from: 'news.example.com', hasAttachment: true }, []))
       .toBe('in:inbox larger:10M from:(news.example.com) has:attachment')
     expect(buildQuery({ read: 'read', subject: 'invoice' }, [])).toBe('in:inbox subject:("invoice") is:read')
+  })
+
+  it('can leave starred and important mail out', () => {
+    expect(buildQuery({ olderThan: { value: 9, unit: 'm' }, keepStarred: true, keepImportant: true }, [{ type: 'trash' }]))
+      .toBe('in:inbox older_than:9m -is:starred -is:important')
+    expect(describeFilters({ olderThan: { value: 9, unit: 'm' }, keepStarred: true })).toBe('Mail older than 9 months, keeping starred mail')
   })
 
   it('excludes mail the actions would not change, so undo is exact', () => {
@@ -39,10 +45,15 @@ describe('validateCleanup', () => {
   it('refuses a rule that would match the whole inbox', () => {
     expect(validateCleanup(rule({ filters: {} }))).toContain('Add at least one filter, or this would match your whole inbox.')
   })
-  it('refuses Trash on filters that could reach everyday mail', () => {
+  it('refuses Trash on filters that could reach everyday mail, unless the user opts in', () => {
     for (const filters of [{ olderThan: { value: 2, unit: 'y' as const } }, { read: 'read' as const }, { category: 'primary' as const }, { largerThanMB: 1 }]) {
-      expect(validateCleanup(rule({ filters, actions: [{ type: 'trash' }] })), JSON.stringify(filters)).toHaveLength(1)
+      const trash = rule({ filters, actions: [{ type: 'trash' }] })
+      expect(isBroadTrash(trash), JSON.stringify(filters)).toBe(true)
+      expect(validateCleanup(trash), JSON.stringify(filters)).toHaveLength(1)
+      expect(validateCleanup({ ...trash, allowBroad: true }), JSON.stringify(filters)).toEqual([])
     }
+    expect(isBroadTrash(rule({ filters: { from: 'spam.example' }, actions: [{ type: 'trash' }] }))).toBe(false)
+    expect(isBroadTrash(rule({ filters: { olderThan: { value: 9, unit: 'm' } }, actions: [{ type: 'archive' }] }))).toBe(false)
     expect(validateCleanup(rule({ filters: { from: 'spam.example' }, actions: [{ type: 'trash' }] }))).toEqual([])
     expect(validateCleanup(rule({ filters: { largerThanMB: 10 }, actions: [{ type: 'trash' }] }))).toEqual([])
   })

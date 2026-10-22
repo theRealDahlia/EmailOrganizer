@@ -14,6 +14,10 @@ export interface CleanupFilters {
   read?: 'unread' | 'read'
   /** Raw Gmail search terms, for anything the fields above can't say. Always kept inside the inbox. */
   extra?: string
+  /** Leave starred mail alone */
+  keepStarred?: boolean
+  /** Leave mail Gmail marks important alone */
+  keepImportant?: boolean
 }
 
 /**
@@ -25,6 +29,11 @@ export interface CleanupRule {
   name: string
   filters: CleanupFilters
   actions: MailAction[]
+  /**
+   * The user knowingly allowed Trash on filters (like age alone) that can reach everyday mail.
+   * Such rules also need a typed confirmation each time they run.
+   */
+  allowBroad?: boolean
 }
 
 const UNIT_WORD = { d: 'day', m: 'month', y: 'year' } as const
@@ -60,6 +69,8 @@ export function buildQuery(filters: CleanupFilters, actions: MailAction[]): stri
   if (filters.read === 'unread') q.push('is:unread')
   if (filters.read === 'read') q.push('is:read')
   if (filters.extra?.trim() && balanced(filters.extra)) q.push(`(${filters.extra.trim()})`)
+  if (filters.keepStarred) q.push('-is:starred')
+  if (filters.keepImportant) q.push('-is:important')
 
   if (actions.some((a) => a.type === 'markRead') && filters.read !== 'unread') q.push('is:unread')
   for (const a of actions) if (a.type === 'addLabel') q.push(`-label:${labelSearchName(a.label)}`)
@@ -76,6 +87,16 @@ export function reverseCleanupActions(actions: MailAction[]): MailAction[] {
     if (a.type === 'addLabel') undo.push({ type: 'removeLabel', label: a.label })
   }
   return undo
+}
+
+/** Filters that pick out particular mail, as opposed to age or read state, which reach everyday mail too. */
+function isNarrow(f: CleanupFilters): boolean {
+  return !!((f.category && f.category !== 'primary') || f.from?.trim() || f.subject?.trim() || (f.largerThanMB ?? 0) >= 5)
+}
+
+/** A Trash rule whose filters could reach everyday mail, and so needs explicit opt-in and a typed confirmation. */
+export function isBroadTrash(rule: Pick<CleanupRule, 'filters' | 'actions'>): boolean {
+  return rule.actions.some((a) => a.type === 'trash') && !isNarrow(rule.filters)
 }
 
 const SYSTEM_LABELS = new Set(['INBOX', 'UNREAD', 'SENT', 'DRAFT', 'SPAM', 'TRASH', 'STARRED', 'IMPORTANT', 'CHAT'])
@@ -100,12 +121,9 @@ export function validateCleanup(rule: CleanupRule): string[] {
     }
   }
 
-  // Moving mail to Trash must not be able to reach ordinary personal mail by age or read state alone.
-  if (rule.actions.some((a) => a.type === 'trash')) {
-    const narrow = (f.category && f.category !== 'primary') || f.from?.trim() || f.subject?.trim() || (f.largerThanMB ?? 0) >= 5
-    if (!narrow) {
-      problems.push('Rules that move mail to Trash need a sender, subject, a non-Primary category, or a size of 5 MB or more, so they can’t reach everyday mail by accident.')
-    }
+  // Moving mail to Trash by age or read state alone can reach everyday mail, so it must be chosen knowingly.
+  if (isBroadTrash(rule) && !rule.allowBroad) {
+    problems.push('Moving mail to Trash by age or read state alone could reach everyday mail. If that is what you want, tick “Include everyday mail” below.')
   }
   return problems
 }
@@ -115,25 +133,25 @@ export const CLEANUP_PRESETS: { name: string; blurb: string; filters: CleanupFil
   {
     name: 'Old promotions',
     blurb: 'Promotions tab mail older than a year goes to Trash.',
-    filters: { category: 'promotions', olderThan: { value: 1, unit: 'y' } },
+    filters: { category: 'promotions', olderThan: { value: 1, unit: 'y' }, keepStarred: true },
     actions: [{ type: 'trash' }],
   },
   {
     name: 'Old social notifications',
     blurb: 'Social tab mail older than 3 months goes to Trash.',
-    filters: { category: 'social', olderThan: { value: 3, unit: 'm' } },
+    filters: { category: 'social', olderThan: { value: 3, unit: 'm' }, keepStarred: true },
     actions: [{ type: 'trash' }],
   },
   {
     name: 'Big old attachments',
     blurb: 'Mail over 10 MB and older than 2 years goes to Trash, freeing the most space.',
-    filters: { largerThanMB: 10, olderThan: { value: 2, unit: 'y' } },
+    filters: { largerThanMB: 10, olderThan: { value: 2, unit: 'y' }, keepStarred: true },
     actions: [{ type: 'trash' }],
   },
   {
     name: 'Tidy old updates',
     blurb: 'Updates tab mail older than 6 months is archived, not deleted.',
-    filters: { category: 'updates', olderThan: { value: 6, unit: 'm' } },
+    filters: { category: 'updates', olderThan: { value: 6, unit: 'm' }, keepStarred: true },
     actions: [{ type: 'archive' }],
   },
 ]
@@ -147,6 +165,7 @@ export function describeFilters(f: CleanupFilters): string {
   if (f.subject) parts.push(`subject has “${f.subject}”`)
   if (f.hasAttachment) parts.push('with attachments')
   if (f.read) parts.push(f.read)
+  if (f.keepStarred || f.keepImportant) parts.push(`keeping ${[f.keepStarred && 'starred', f.keepImportant && 'important'].filter(Boolean).join(' and ')} mail`)
   if (f.extra) parts.push(`matching ${f.extra}`)
   return parts.length ? `Mail ${parts.join(', ')}` : 'Any inbox mail'
 }

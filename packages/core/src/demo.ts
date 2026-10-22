@@ -27,7 +27,7 @@ export class DemoProvider implements MailProvider {
         accountId: 'demo',
         from: { name: s.name, email: s.email },
         subject: s.subject,
-        date: new Date(now - i * 6 * 3_600_000).toISOString(),
+        date: new Date(now - i * 6 * 3_600_000 - 3_600_000).toISOString(), // 1 h offset: no message sits exactly on a whole-day boundary
         labels: ['INBOX'],
         isUnread: i % 4 !== 0,
         sizeBytes: 8_000 + ((i * 7919) % 90_000),

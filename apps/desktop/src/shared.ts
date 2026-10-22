@@ -93,7 +93,7 @@ export interface OrganizerApi {
   /** Searches Gmail for the rule's matches; changes nothing. */
   previewCleanup(ruleId: string): Promise<CleanupPreview>
   /** Runs the rule on whatever Gmail finds now, unless far more matches than `expectedCount` appeared. */
-  applyCleanup(ruleId: string, expectedCount: number): Promise<ActivityEntry>
+  applyCleanup(ruleId: string, expectedCount: number, confirmation?: string): Promise<ActivityEntry>
   subscriptions(): Promise<Subscription[]>
   unsubscribe(senderEmail: string, method: UnsubscribeMethod): Promise<void>
   /** Creates (but does not run) a rule that archives everything from this sender. */

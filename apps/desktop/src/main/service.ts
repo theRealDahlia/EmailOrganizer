@@ -1,5 +1,5 @@
 import {
-  StorageScopeError, applyActionsToMessage, buildOverview, buildQuery, reverseCleanupActions, validateCleanup, buildSubscriptions, categorize, inverseActions, parseListUnsubscribe, planChanges, validateRule,
+  StorageScopeError, applyActionsToMessage, buildOverview, buildQuery, isBroadTrash, reverseCleanupActions, validateCleanup, buildSubscriptions, categorize, inverseActions, parseListUnsubscribe, planChanges, validateRule,
   type CleanupRule, type MailAction, type MailMessage, type MailProvider, type Rule, type Subscription, type UnsubscribeTargets,
 } from '@organizer/core'
 import type { ActivityEntry, CleanupPreview, OverviewResult, PreviewResult, ScanProgress, StorageResult } from '../shared'
@@ -413,8 +413,12 @@ export class OrganizerService {
     }
   }
 
-  async applyCleanup(ruleId: string, expectedCount: number): Promise<ActivityEntry> {
+  /** `confirmation` must be the word TRASH for a rule that could reach everyday mail; checked here, not just on screen. */
+  async applyCleanup(ruleId: string, expectedCount: number, confirmation?: string): Promise<ActivityEntry> {
     const { rule, provider, query } = this.cleanupSetup(ruleId)
+    if (isBroadTrash(rule) && confirmation?.trim().toUpperCase() !== 'TRASH') {
+      throw new Error('This rule can reach everyday mail. Type TRASH to confirm.')
+    }
     const ids = await provider.searchInbox!(query) // search again now, so nothing stale is acted on
     if (ids.length > expectedCount * 1.1 + 25) {
       throw new Error(`More mail matches now (${ids.length.toLocaleString()}) than when you previewed (${expectedCount.toLocaleString()}). Preview again to review it.`)
