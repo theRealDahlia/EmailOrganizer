@@ -59,3 +59,7 @@ footer.storage { margin-top: 32px; padding-top: 16px; border-top: 1px solid var(
 .meter { height: 8px; background: var(--line); border-radius: 4px; overflow: hidden; margin-bottom: 8px; }
 .meter i { display: block; height: 100%; background: var(--muted); border-radius: 4px; }
 .meter i.high { background: var(--danger); }
+
+button.btn.danger:not(:disabled):hover { filter: brightness(1.1); }
+button.btn.danger:not(:disabled):active { transform: translateY(1px); filter: brightness(0.85); }
+button.btn.danger.stopping { background: transparent; color: var(--danger); opacity: 1; cursor: progress; }

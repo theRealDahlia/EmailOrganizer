@@ -1,4 +1,4 @@
-import { useRef } from 'react'
+import { useRef, useState } from 'react'
 import type { ScanProgress } from '../../shared'
 
 function eta(done: number, total: number, startedAt: number): string | null {
@@ -11,6 +11,7 @@ function eta(done: number, total: number, startedAt: number): string | null {
 /** Shown while the inbox is being scanned. Large inboxes download at a throttled rate to stay under Gmail's quota. */
 export function ScanProgressPanel({ progress, onCancel }: { progress: ScanProgress | null; onCancel: () => void }) {
   const startedAt = useRef(Date.now())
+  const [stopping, setStopping] = useState(false)
   const fetching = progress?.phase === 'fetching' && progress.total > 0
   const pct = fetching ? Math.round((progress.done / progress.total) * 100) : 0
 
@@ -33,7 +34,16 @@ export function ScanProgressPanel({ progress, onCancel }: { progress: ScanProgre
           </p>
         </>
       )}
-      <div className="actions"><button className="btn" onClick={onCancel}>Stop scan</button></div>
+      <div className="actions">
+        <button
+          className={`btn danger${stopping ? ' stopping' : ''}`}
+          disabled={stopping}
+          onClick={() => { setStopping(true); onCancel() }}
+        >
+          {stopping ? 'Stopping…' : 'Stop scan'}
+        </button>
+        {stopping && <span className="muted" style={{ alignSelf: 'center' }}>Finishing the current batch, then saving your progress.</span>}
+      </div>
     </section>
   )
 }
