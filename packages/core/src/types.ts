@@ -68,6 +68,8 @@ export interface MailProvider {
   readonly id: string
   /** Identifies the mailbox (the email address; 'demo' for the demo mailbox). */
   readonly accountId: string
+  /** Messages this provider can download per minute at its current pace, if it is rate limited. */
+  readonly fetchesPerMinute?: number
   listMessages(cursor?: string): Promise<MailPage>
   /** Ids of every inbox message, newest first. Cheap: no message content is fetched. */
   listInboxIds(unreadOnly: boolean, opts?: ScanHooks): Promise<string[]>

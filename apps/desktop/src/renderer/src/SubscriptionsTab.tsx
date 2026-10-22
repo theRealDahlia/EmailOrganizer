@@ -1,11 +1,11 @@
 import { useEffect, useState } from 'react'
 import { parseListUnsubscribe, type Subscription } from '@organizer/core'
-import type { ScanProgress } from '../../shared'
-import { ScanProgressPanel } from './ScanProgressPanel'
+import type { OverviewResult } from '../../shared'
+import { CoverageNote } from './ScanStatus'
 
 const api = window.organizer
 
-export function SubscriptionsTab({ progress, onCancel, onGoToRules }: { progress: ScanProgress | null; onCancel: () => void; onGoToRules: () => void }) {
+export function SubscriptionsTab({ scan, onGoToRules }: { scan: OverviewResult | null; onGoToRules: () => void }) {
   const [subs, setSubs] = useState<Subscription[] | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [confirming, setConfirming] = useState<string | null>(null)
@@ -16,7 +16,7 @@ export function SubscriptionsTab({ progress, onCancel, onGoToRules }: { progress
     setError(null)
     api.subscriptions().then(setSubs, (e) => setError(e instanceof Error ? e.message : String(e)))
   }
-  useEffect(load, [])
+  useEffect(load, [scan?.total]) // reload as a running scan finds more messages
 
   const act = async (email: string, fn: () => Promise<string>) => {
     setBusy(email); setError(null); setConfirming(null)
@@ -26,13 +26,14 @@ export function SubscriptionsTab({ progress, onCancel, onGoToRules }: { progress
   }
 
   if (error && !subs) return <div className="notice"><p className="error">{error}</p><button className="btn" onClick={load}>Try again</button></div>
-  if (!subs) return <ScanProgressPanel progress={progress} onCancel={onCancel} />
+  if (!subs) return <p className="muted">Looking for subscriptions…</p>
 
   return (
     <>
       {error && <div className="notice error">{error}</div>}
       <section className="card">
         <h2>Subscriptions <span className="muted">({subs.length})</span></h2>
+        {scan && <CoverageNote scan={scan} />}
         <p className="muted">Senders whose mail includes an unsubscribe option, from the messages scanned. Sorted by volume; a low read rate suggests you don't want them.</p>
         {subs.length === 0 && <p>No subscriptions found in the scanned messages.</p>}
         {subs.map((s) => {

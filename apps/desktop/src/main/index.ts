@@ -14,13 +14,13 @@ function registerIpc(service: OrganizerService, accounts: AccountManager) {
   ipcMain.handle('accountStatus', () => accounts.status())
   ipcMain.handle('storage', () => service.storage())
   ipcMain.handle('saveGoogleCredentials', (_e, id: string, secret: string) => accounts.saveCredentials(id, secret))
-  ipcMain.handle('connectGmail', async () => { await accounts.connect(); service.invalidate() })
+  ipcMain.handle('connectGmail', async () => { await accounts.connect(); service.invalidate(true) })
   ipcMain.handle('cancelScan', () => service.cancelScan())
   ipcMain.handle('disconnect', async () => {
     const email = accounts.status().email
     await accounts.disconnect()
     if (email) store.clearMessages(email) // the local copy of this account's mail metadata goes with the sign-in
-    service.invalidate()
+    service.invalidate(true)
   })
   ipcMain.handle('listRules', () => store.listRules())
   ipcMain.handle('saveRule', (_e, rule: Rule) => service.saveRule(rule))

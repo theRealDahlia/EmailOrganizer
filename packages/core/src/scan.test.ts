@@ -125,3 +125,34 @@ describe('progress hooks', () => {
     expect(waits).toEqual([2000, 4000])
   })
 })
+
+describe('pacing', () => {
+  const quota = { error: { message: 'Quota exceeded', errors: [{ reason: 'rateLimitExceeded' }] } }
+  const gmail = (f: typeof fetch, sleeps: number[]) =>
+    new GmailProvider({ accountId: 'a', getAccessToken: async () => 't', fetch: f, sleep: async (ms) => { sleeps.push(ms) } })
+
+  it('spaces fetches about 222 ms apart (under 300 fetches a minute)', async () => {
+    const f = (async (u: string) => {
+      const path = new URL(u).pathname
+      return path.endsWith('/labels') ? json({ labels: [] }) : json(meta(path.split('/').pop()!))
+    }) as unknown as typeof fetch
+    const sleeps: number[] = []
+    const p = gmail(f, sleeps)
+    expect(p.fetchesPerMinute).toBe(270)
+    await p.getMessages(['a', 'b', 'c', 'd'])
+    expect(sleeps.length).toBeGreaterThanOrEqual(3)
+    expect(Math.max(...sleeps)).toBeGreaterThanOrEqual(600) // 4 fetches queued at 222 ms intervals
+  })
+
+  it('slows its pace after Google pushes back', async () => {
+    let n = 0
+    const f = (async (u: string) => {
+      const path = new URL(u).pathname
+      if (path.endsWith('/labels')) return json({ labels: [] })
+      return ++n === 1 ? json(quota, 403) : json(meta('a'))
+    }) as unknown as typeof fetch
+    const p = gmail(f, [])
+    await p.getMessages(['a'])
+    expect(p.fetchesPerMinute).toBeLessThan(270)
+  })
+})

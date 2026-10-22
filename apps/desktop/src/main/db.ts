@@ -5,6 +5,8 @@ import type { ActivityEntry } from '../shared'
 export interface UndoStep {
   messageIds: string[]
   actions: MailAction[]
+  /** Metadata of messages that left the inbox, so undoing doesn't need to download them again. */
+  restore?: MailMessage[]
 }
 
 export class Store {

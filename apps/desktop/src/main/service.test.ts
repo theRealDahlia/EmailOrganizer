@@ -36,6 +36,34 @@ class CountingProvider extends DemoProvider {
   }
 }
 
+/** A mailbox whose listing and downloads can be held open, to look at the app mid-scan. */
+class BlockingProvider extends CountingProvider {
+  holdListing: Promise<void> | null = null
+  holdDownloads: Promise<void> | null = null
+  override async listInboxIds(unreadOnly: boolean, hooks?: Parameters<DemoProvider['listInboxIds']>[1]) {
+    await this.holdListing
+    return super.listInboxIds(unreadOnly, hooks)
+  }
+  override async getMessages(ids: string[], opts?: { signal?: AbortSignal }) {
+    await this.holdDownloads
+    return super.getMessages(ids, opts)
+  }
+}
+
+const gate = () => {
+  let open!: () => void
+  const promise = new Promise<void>((r) => { open = r })
+  return { promise, open }
+}
+
+const until = async (check: () => Promise<boolean>) => {
+  for (let i = 0; i < 100; i++) {
+    if (await check()) return
+    await new Promise((r) => setTimeout(r, 20))
+  }
+  throw new Error('timed out waiting')
+}
+
 const setup = (count: number) => {
   const provider = new CountingProvider(count)
   const store = new FakeStore()
@@ -69,6 +97,96 @@ describe('scan progress', () => {
   })
 })
 
+describe('non-blocking scan', () => {
+  it('returns what it has instead of waiting for a long download', async () => {
+    const store = new FakeStore() as unknown as Store
+    await new OrganizerService(() => new CountingProvider(10), store).overview() // 10 messages already cached
+
+    const provider = new BlockingProvider(30)
+    const hold = gate()
+    provider.holdDownloads = hold.promise
+    const service = new OrganizerService(() => provider, store)
+
+    const view = await service.overview()
+    expect(view).toMatchObject({ scanning: true, complete: false, total: 10, inboxTotal: 30 })
+
+    // other features work on the partial data, but mail can't be changed mid-scan
+    expect((await service.preview('default-receipts')).basis).toMatchObject({ scanned: 10, inboxTotal: 30, scanning: true })
+    await expect(service.apply('default-receipts')).rejects.toThrow(/scan is still running/)
+
+    hold.open()
+    await until(async () => !(await service.overview()).scanning)
+    expect(await service.overview()).toMatchObject({ total: 30, complete: true, scanning: false })
+  })
+
+  it('keeps showing the previous overview while a rescan counts the inbox', async () => {
+    const provider = new BlockingProvider(25)
+    const service = new OrganizerService(() => provider, new FakeStore() as unknown as Store)
+    expect(await service.overview()).toMatchObject({ total: 25, scanning: false })
+
+    const hold = gate()
+    provider.holdListing = hold.promise // the rescan is stuck listing the inbox
+    const during = await service.overview(true)
+    expect(during).toMatchObject({ scanning: true, total: 25 }) // not blank
+    hold.open()
+  })
+
+  it('reports that it is stopping when cancelled', async () => {
+    const provider = new CountingProvider(450)
+    const events: ScanProgress[] = []
+    const service = new OrganizerService(() => provider, new FakeStore() as unknown as Store, (p) => events.push(p))
+    provider.onFetch = () => service.cancelScan()
+    await service.overview()
+    expect(events.some((e) => e.stopping)).toBe(true)
+  })
+
+  it('stamps every event with the scan start time, so the clock survives tab switches', async () => {
+    const provider = new CountingProvider(120)
+    const events: ScanProgress[] = []
+    const service = new OrganizerService(() => provider, new FakeStore() as unknown as Store, (p) => events.push(p))
+    await service.overview()
+    expect(new Set(events.map((e) => e.startedAt)).size).toBe(1)
+  })
+})
+
+describe('undo', () => {
+  const shopRule = (actions: Rule['actions']): Rule => ({
+    id: 'shop', name: 'Shop', enabled: true, match: 'all',
+    conditions: [{ field: 'senderDomain', op: 'equals', value: 'shopmart.example' }], actions,
+  })
+
+  it('reverses a large rule in a few batched calls, not one per message', async () => {
+    const { service, store, provider } = setup(300)
+    store.saveRule(shopRule([{ type: 'addLabel', label: 'Shop' }]))
+    const { changes } = await service.preview('shop')
+    expect(changes.length).toBeGreaterThan(50)
+    const entry = await service.apply('shop')
+
+    const calls: string[][] = []
+    const original = provider.applyActions.bind(provider)
+    provider.applyActions = async (ids, actions) => { calls.push(ids); return original(ids, actions) }
+    await service.undo(entry.id)
+    expect(calls).toHaveLength(1)
+    expect(calls[0]).toHaveLength(changes.length)
+  })
+
+  it('brings archived mail back without downloading it again', async () => {
+    const { service, store, provider } = setup(300)
+    store.saveRule(shopRule([{ type: 'archive' }]))
+    const before = (await service.overview()).total
+    const entry = await service.apply('shop')
+    await until(async () => !(await service.overview()).scanning)
+    expect((await service.overview()).total).toBeLessThan(before)
+
+    await service.undo(entry.id)
+    provider.downloaded = []
+    await service.overview(true)
+    await until(async () => !(await service.overview()).scanning)
+    expect(await service.overview()).toMatchObject({ total: before, complete: true })
+    expect(provider.downloaded).toEqual([]) // restored from the undo log, not re-downloaded
+  })
+})
+
 describe('full-inbox scan', () => {
   it('scans past 200 messages and caches them', async () => {
     const { service, store } = setup(450)
@@ -99,18 +217,20 @@ describe('full-inbox scan', () => {
 
   it('keeps partial results when cancelled, then resumes without re-downloading', async () => {
     const { service, provider, store } = setup(450)
-    provider.onFetch = () => service.cancelScan() // stop after the first chunk of 200
+    provider.onFetch = () => service.cancelScan() // stop after the first chunk
     const partial = await service.overview()
     expect(partial.complete).toBe(false)
-    expect(partial.total).toBe(200)
+    expect(partial.scanning).toBe(false)
+    expect(partial.total).toBeGreaterThan(0)
+    expect(partial.total).toBeLessThan(450)
     expect(partial.inboxTotal).toBe(450)
-    expect(store.loadMessages('me@x.com').size).toBe(200)
+    expect(store.loadMessages('me@x.com').size).toBe(partial.total)
 
     provider.onFetch = () => {}
     provider.downloaded = []
     const full = await service.overview(true)
     expect(full).toMatchObject({ total: 450, complete: true })
-    expect(provider.downloaded).toHaveLength(250) // only the remainder
+    expect(provider.downloaded).toHaveLength(450 - partial.total) // only the remainder
   })
 
   it('applies a rule to the whole inbox and keeps the cache in step, with undo', async () => {

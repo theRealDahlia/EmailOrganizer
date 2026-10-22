@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useState } from 'react'
 import type { Rule } from '@organizer/core'
 import type { AccountStatus, ActivityEntry, OverviewResult, PreviewResult, ScanProgress } from '../../shared'
-import { ScanProgressPanel } from './ScanProgressPanel'
 import { RuleEditor } from './RuleEditor'
+import { CoverageNote, ScanStatus } from './ScanStatus'
 import { StorageMeter } from './StorageMeter'
 import { SubscriptionsTab } from './SubscriptionsTab'
 
@@ -33,28 +33,35 @@ function OverviewTab({ overview, error, progress, onRescan, onCancel }: {
       </div>
     )
   }
-  if (!overview) return <ScanProgressPanel progress={progress} onCancel={onCancel} />
+  if (!overview) return <p className="muted">Loading…</p>
+  // Nothing to show yet (first-ever scan): the status card is the whole page.
+  if (overview.scanning && overview.total === 0) return <ScanStatus progress={progress} onCancel={onCancel} />
+
   const cats = Object.entries(overview.byCategory).sort((a, b) => b[1] - a[1])
   return (
     <>
-      {!overview.complete && (
+      {overview.scanning && <div style={{ marginBottom: 16 }}><ScanStatus progress={progress} compact onCancel={onCancel} /></div>}
+      {!overview.complete && !overview.scanning && (
         <div className="notice">
           Scan stopped: showing {overview.total.toLocaleString()} of {overview.inboxTotal.toLocaleString()} inbox messages (the newest first).{' '}
           <button className="btn" onClick={onRescan}>Resume scan</button>
         </div>
       )}
       <div className="stats">
-        <div className="card stat"><b>{overview.total.toLocaleString()}</b><span>{overview.complete ? 'messages in inbox' : 'messages scanned'}</span></div>
+        <div className="card stat">
+          <b>{overview.total.toLocaleString()}</b>
+          <span>{overview.complete && !overview.scanning ? 'messages in inbox' : `of ${overview.inboxTotal.toLocaleString()} scanned`}</span>
+        </div>
         <div className="card stat"><b>{overview.unread.toLocaleString()}</b><span>unread</span></div>
         <div className="card stat"><b>{overview.subscriptions.length}</b><span>subscriptions</span></div>
-        {overview.complete && <div className="actions" style={{ alignSelf: 'flex-start' }}><button className="btn" onClick={onRescan}>Rescan</button></div>}
+        {overview.complete && !overview.scanning && <div className="actions" style={{ alignSelf: 'flex-start' }}><button className="btn" onClick={onRescan}>Rescan</button></div>}
       </div>
       <div className="grid">
         <section className="card">
           <h2>Categories</h2>
           {cats.map(([name, n]) => (
             <div key={name} style={{ marginBottom: 10 }}>
-              <div className="row" style={{ padding: 0, border: 0 }}><span>{name}</span><span className="muted">{n}</span></div>
+              <div className="row" style={{ padding: 0, border: 0 }}><span>{name}</span><span className="muted">{n.toLocaleString()}</span></div>
               <div className="bar"><i style={{ width: `${(n / overview.total) * 100}%` }} /></div>
             </div>
           ))}
@@ -65,7 +72,7 @@ function OverviewTab({ overview, error, progress, onRescan, onCancel }: {
             <thead><tr><th>Sender</th><th className="num">Count</th><th className="num">Unread</th></tr></thead>
             <tbody>
               {overview.topSenders.map((s) => (
-                <tr key={s.email}><td>{s.name}<div className="muted">{s.email}</div></td><td className="num">{s.count}</td><td className="num">{s.unread}</td></tr>
+                <tr key={s.email}><td>{s.name}<div className="muted">{s.email}</div></td><td className="num">{s.count.toLocaleString()}</td><td className="num">{s.unread.toLocaleString()}</td></tr>
               ))}
             </tbody>
           </table>
@@ -75,7 +82,7 @@ function OverviewTab({ overview, error, progress, onRescan, onCancel }: {
   )
 }
 
-function RulesTab({ onApplied }: { onApplied: () => void }) {
+function RulesTab({ onApplied, scanning }: { onApplied: () => void; scanning: boolean }) {
   const [rules, setRules] = useState<Rule[]>([])
   const [preview, setPreview] = useState<{ rule: Rule; result: PreviewResult } | null>(null)
   const [busy, setBusy] = useState(false)
@@ -133,6 +140,8 @@ function RulesTab({ onApplied }: { onApplied: () => void }) {
         <section className="card" style={{ marginTop: 16 }}>
           <h2>Preview: {preview.rule.name}</h2>
           <p>This would change <b>{preview.result.changes.length}</b> messages. Nothing has been changed yet.</p>
+          <CoverageNote scan={{ total: preview.result.basis.scanned, inboxTotal: preview.result.basis.inboxTotal, complete: preview.result.basis.complete, scanning: preview.result.basis.scanning }} />
+          {scanning && <div className="notice">A scan is running, so rules can’t be applied until it finishes or you stop it. You can still preview.</div>}
           {trashes(preview.rule) && (
             <div className="notice danger">
               <b>These messages would be moved to Trash</b>, about <b>{formatBytes(preview.result.totalBytes)}</b> in size.
@@ -148,7 +157,7 @@ function RulesTab({ onApplied }: { onApplied: () => void }) {
             </tbody>
           </table>
           <div className="actions" style={{ marginTop: 12 }}>
-            <button className={trashes(preview.rule) ? 'btn danger' : 'btn primary'} disabled={busy || preview.result.changes.length === 0}
+            <button className={trashes(preview.rule) ? 'btn danger' : 'btn primary'} disabled={busy || scanning || preview.result.changes.length === 0}
               onClick={() => run(async () => {
                 const n = preview.result.changes.length
                 if (trashes(preview.rule) && !window.confirm(`Move ${n} messages to Trash?\n\nYou can undo this from the Activity tab, and Gmail empties Trash after 30 days.`)) return
@@ -252,13 +261,25 @@ export function App() {
   const [status, setStatus] = useState<AccountStatus | null>(null)
 
   const refresh = useCallback((force = false) => {
-    setOverviewError(null)
+    setOverviewError(null) // the previous overview stays on screen while a rescan starts
     api.overview(force).then(setOverview, (e) => setOverviewError(e instanceof Error ? e.message : String(e)))
   }, [])
   const loadStatus = useCallback(() => { api.accountStatus().then(setStatus) }, [])
-  const accountChanged = useCallback(() => { loadStatus(); setOverview(null); refresh(true) }, [loadStatus, refresh])
+  const accountChanged = useCallback(() => { loadStatus(); setOverview(null); setProgress(null); refresh(true) }, [loadStatus, refresh])
+  // Listen before the first request so no progress events are missed.
+  useEffect(() => api.onScanProgress((p) => {
+    setProgress(p)
+    if (p.phase === 'done') refresh() // pick up the final result straight away
+  }), [refresh])
   useEffect(() => { loadStatus(); refresh() }, [loadStatus, refresh])
-  useEffect(() => api.onScanProgress(setProgress), [])
+  // While a scan runs, keep the numbers current as messages arrive.
+  const scanning = overview?.scanning ?? false
+  useEffect(() => {
+    if (!scanning) return
+    const t = setInterval(() => refresh(), 3000)
+    return () => clearInterval(t)
+  }, [scanning, refresh])
+
 
   return (
     <div className="app">
@@ -273,9 +294,9 @@ export function App() {
           <button key={t} role="tab" aria-selected={tab === t} onClick={() => setTab(t)}>{t[0].toUpperCase() + t.slice(1)}</button>
         ))}
       </nav>
-      {tab === 'overview' && <OverviewTab overview={overview} error={overviewError} progress={progress} onRescan={() => { setOverview(null); refresh(true) }} onCancel={() => { api.cancelScan() }} />}
-      {tab === 'subscriptions' && <SubscriptionsTab progress={progress} onCancel={() => { api.cancelScan() }} onGoToRules={() => setTab('rules')} />}
-      {tab === 'rules' && <RulesTab onApplied={() => refresh()} />}
+      {tab === 'overview' && <OverviewTab overview={overview} error={overviewError} progress={progress} onRescan={() => refresh(true)} onCancel={() => { api.cancelScan() }} />}
+      {tab === 'subscriptions' && <SubscriptionsTab scan={overview} onGoToRules={() => setTab('rules')} />}
+      {tab === 'rules' && <RulesTab onApplied={() => refresh()} scanning={scanning} />}
       {tab === 'activity' && <ActivityTab onUndone={() => refresh()} />}
       {tab === 'accounts' && <AccountsTab status={status} onChanged={accountChanged} />}
       <StorageMeter refreshKey={`${status?.mode}:${status?.email}:${overview?.total}`} onReconnect={() => setTab('accounts')} />

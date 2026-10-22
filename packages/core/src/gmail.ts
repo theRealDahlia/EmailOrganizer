@@ -6,9 +6,14 @@ const API = 'https://gmail.googleapis.com/gmail/v1/users/me'
 const METADATA_HEADERS = ['From', 'Subject', 'List-Unsubscribe', 'List-Unsubscribe-Post']
 const DRIVE_ABOUT = 'https://www.googleapis.com/drive/v3/about'
 const BATCH_MODIFY_LIMIT = 1000
-const FETCH_CONCURRENCY = 4
-/** Gmail allows ~15,000 quota units/min per user and each message fetch costs 5, so stay near 2,000 fetches/min. */
-const MIN_FETCH_INTERVAL_MS = 30
+const FETCH_CONCURRENCY = 2
+/**
+ * Gmail's per-user limit is 6,000 quota units per minute and messages.get costs 20 units
+ * (https://developers.google.com/workspace/gmail/api/reference/quota), so at most 300 fetches a minute.
+ * Pace at about 90% of that, leaving room for the listing and label calls that share the budget.
+ */
+const BASE_FETCH_INTERVAL_MS = 222
+const MAX_FETCH_INTERVAL_MS = 2000
 const LIST_PAGE_SIZE = 500
 const MAX_INBOX_IDS = 500_000
 const MAX_RETRIES = 5
@@ -55,12 +60,19 @@ export class GmailProvider implements MailProvider {
     return this.opts.accountId
   }
 
+  /** Current download pace; drops if Google pushes back, so the caller can show an honest estimate. */
+  get fetchesPerMinute(): number {
+    return Math.floor(60_000 / this.fetchIntervalMs)
+  }
+
   private labelsById = new Map<string, string>()
   private labelsByName = new Map<string, string>() // lower-case name -> id
   private labelsLoaded = false
   private fetchImpl: typeof fetch
   private sleep: (ms: number) => Promise<void>
   private nextFetchAt = 0
+  private fetchIntervalMs = BASE_FETCH_INTERVAL_MS
+  private successStreak = 0
 
   constructor(private opts: GmailProviderOptions) {
     this.fetchImpl = opts.fetch ?? fetch
@@ -128,12 +140,27 @@ export class GmailProvider implements MailProvider {
     return out.filter((m): m is MailMessage => m !== undefined)
   }
 
-  /** Spaces message fetches out so a full-inbox scan stays under Gmail's per-minute quota. */
+  /** Spaces message fetches out so a full-inbox scan stays inside Gmail's per-minute quota. */
   private async throttleFetch(): Promise<void> {
     const now = Date.now()
     const start = Math.max(now, this.nextFetchAt)
-    this.nextFetchAt = start + MIN_FETCH_INTERVAL_MS
+    this.nextFetchAt = start + this.fetchIntervalMs
     if (start > now) await this.sleep(start - now)
+  }
+
+  /** Google said slow down: make every in-flight fetch wait, and pace more gently from now on. */
+  private noteRateLimited(waitMs: number): void {
+    this.nextFetchAt = Math.max(this.nextFetchAt, Date.now() + waitMs)
+    this.fetchIntervalMs = Math.min(Math.round(this.fetchIntervalMs * 1.5), MAX_FETCH_INTERVAL_MS)
+    this.successStreak = 0
+  }
+
+  /** After a long clean run, creep back toward the normal pace. */
+  private noteSuccess(): void {
+    if (this.fetchIntervalMs > BASE_FETCH_INTERVAL_MS && ++this.successStreak >= 100) {
+      this.fetchIntervalMs = Math.max(BASE_FETCH_INTERVAL_MS, Math.round(this.fetchIntervalMs / 1.1))
+      this.successStreak = 0
+    }
   }
 
   async applyActions(messageIds: string[], actions: MailAction[]): Promise<void> {
@@ -242,12 +269,14 @@ export class GmailProvider implements MailProvider {
         if ((rateLimited || res.status >= 500) && attempt < MAX_RETRIES) {
           const retryAfter = Number(res.headers.get('Retry-After'))
           const wait = Math.min(Math.max(retryAfter * 1000 || 0, 2000 * 2 ** attempt), 30_000)
+          this.noteRateLimited(wait)
           onWait?.(wait)
           await this.sleep(wait)
           continue
         }
         throw new GmailApiError(res.status, rateLimited ? 'Gmail is rate limiting requests. Wait a minute and try again.' : message)
       }
+      this.noteSuccess()
       return (res.status === 204 ? undefined : await res.json()) as T
     }
   }

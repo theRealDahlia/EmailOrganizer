@@ -9,7 +9,13 @@ export interface ActivityEntry {
 }
 
 /** Overview of the scanned inbox, plus whether every inbox message was scanned. */
-export type OverviewResult = Overview & { inboxTotal: number; complete: boolean }
+export type OverviewResult = Overview & {
+  inboxTotal: number
+  /** every inbox message has been scanned */
+  complete: boolean
+  /** a scan is running now; the figures cover only what has been scanned so far */
+  scanning: boolean
+}
 
 export interface ScanProgress {
   phase: 'listing' | 'fetching' | 'done'
@@ -19,6 +25,12 @@ export interface ScanProgress {
   total: number
   /** Google asked the app to slow down and it is waiting before retrying */
   throttled?: boolean
+  /** epoch ms when this scan began, so the UI's clock survives tab switches */
+  startedAt: number
+  /** messages downloaded per minute: measured recently, or the provider's nominal pace at first */
+  perMinute?: number
+  /** the user pressed Stop; the scan is finishing its current step */
+  stopping?: boolean
 }
 
 export type StorageResult =
@@ -33,6 +45,8 @@ export interface PreviewResult {
   samples: MailMessage[]
   /** Combined size of the distinct messages the rule would change (Gmail's size estimate). */
   totalBytes: number
+  /** what the preview is based on; less than the whole inbox while a scan is running or after it was stopped */
+  basis: { scanned: number; inboxTotal: number; complete: boolean; scanning: boolean }
 }
 
 export interface AccountStatus {

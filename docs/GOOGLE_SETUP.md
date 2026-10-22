@@ -59,3 +59,20 @@ Before strangers can use it:
 
 ## Adding the storage permission to an existing sign-in
 If you connected before the storage meter existed, the meter shows **Reconnect Google**. Click it, then **Reconnect** in the Accounts tab, and approve the extra permission.
+
+## Gmail's rate limit, and why big inboxes take hours
+
+Google's [usage limits](https://developers.google.com/workspace/gmail/api/reference/quota) allow **6,000 quota units per minute per user**, and reading one message's headers costs **20 units**. That caps the app at about 300 messages a minute (it paces itself to roughly 270). The limit applies to Google's API, not to this app, so no code change makes a first scan faster:
+
+| Inbox size | First full scan |
+|---|---|
+| 5,000 | ~20 min |
+| 25,000 | ~1.5 h |
+| 75,000 | ~4.5 h |
+
+What the app does about it:
+- The scan runs in the background, newest mail first, and the Overview, Subscriptions and rule previews work on what has been scanned so far.
+- Progress is saved, so stopping or quitting loses nothing. Later scans only download new mail.
+- Actions are cheap: moving or labelling mail uses `batchModify` (50 units per 1,000 messages), so applying a rule to a whole inbox takes seconds once the mail is scanned.
+
+To check or raise the limit for your project: Cloud console → **APIs & Services → Gmail API → Quotas & System Limits**, then **Request a higher quota limit**. Google says approval isn't guaranteed and large increases take longer. Projects that used the Gmail API between November 2025 and April 2026 keep their earlier quotas; newer projects get the limits above.

@@ -76,3 +76,7 @@ button.btn.danger.stopping { background: transparent; color: var(--danger); opac
   .spinner { animation-duration: 3s; }
   .scan-meter.indeterminate i { animation: none; left: 0; width: 100%; opacity: 0.4; }
 }
+
+.scan-status.compact { padding: 12px 16px; }
+.scan-head .btn { margin-left: 8px; }
+.scan-clock { margin-left: auto; }
