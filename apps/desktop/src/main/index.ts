@@ -1,6 +1,6 @@
 import { app, BrowserWindow, ipcMain, shell } from 'electron'
 import { join } from 'node:path'
-import type { Rule } from '@organizer/core'
+import type { CleanupRule, Rule } from '@organizer/core'
 import type { ScanProgress, UnsubscribeMethod } from '../shared'
 import { AccountManager } from './accounts'
 import { Store } from './db'
@@ -24,6 +24,11 @@ function registerIpc(service: OrganizerService, accounts: AccountManager) {
   })
   ipcMain.handle('listRules', () => store.listRules())
   ipcMain.handle('saveRule', (_e, rule: Rule) => service.saveRule(rule))
+  ipcMain.handle('cleanupRules', () => service.cleanupRules())
+  ipcMain.handle('saveCleanupRule', (_e, rule: CleanupRule) => service.saveCleanupRule(rule))
+  ipcMain.handle('deleteCleanupRule', (_e, id: string) => service.deleteCleanupRule(id))
+  ipcMain.handle('previewCleanup', (_e, id: string) => service.previewCleanup(id))
+  ipcMain.handle('applyCleanup', (_e, id: string, expected: number) => service.applyCleanup(id, expected))
   ipcMain.handle('subscriptions', () => service.subscriptions())
   ipcMain.handle('createArchiveRule', (_e, email: string) => service.createArchiveRule(email))
   ipcMain.handle('unsubscribe', async (_e, email: string, method: UnsubscribeMethod) => {

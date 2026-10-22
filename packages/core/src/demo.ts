@@ -1,3 +1,4 @@
+import { matchesGmailQuery } from './cleanup'
 import { applyActionsToMessage } from './rules'
 import type { ScanHooks, MailAction, MailMessage, MailPage, MailProvider, StorageQuota } from './types'
 
@@ -45,6 +46,10 @@ export class DemoProvider implements MailProvider {
 
   async listMessages(): Promise<MailPage> {
     return { messages: this.messages.map((m) => ({ ...m, labels: [...m.labels] })) }
+  }
+
+  async searchInbox(query: string, _hooks?: ScanHooks): Promise<string[]> {
+    return this.messages.filter((m) => matchesGmailQuery(m, query)).map((m) => m.id)
   }
 
   async listInboxIds(unreadOnly: boolean, _hooks?: ScanHooks): Promise<string[]> {

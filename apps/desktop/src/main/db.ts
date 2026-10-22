@@ -1,5 +1,5 @@
 import Database from 'better-sqlite3'
-import type { MailAction, MailMessage, Rule } from '@organizer/core'
+import type { CleanupRule, MailAction, MailMessage, Rule } from '@organizer/core'
 import type { ActivityEntry } from '../shared'
 
 export interface UndoStep {
@@ -31,6 +31,7 @@ export class Store {
         json TEXT NOT NULL,
         PRIMARY KEY (account_id, id)
       );
+      CREATE TABLE IF NOT EXISTS cleanup_rules (id TEXT PRIMARY KEY, position INTEGER NOT NULL, json TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS scan_state (
         account_id TEXT PRIMARY KEY,
         history_id TEXT NOT NULL,
@@ -57,6 +58,21 @@ export class Store {
     const existing = this.db.prepare('SELECT position FROM rules WHERE id = ?').get(rule.id) as { position: number } | undefined
     const position = existing?.position ?? (this.db.prepare('SELECT COALESCE(MAX(position), 0) + 1 AS p FROM rules').get() as { p: number }).p
     this.db.prepare('INSERT OR REPLACE INTO rules (id, position, json) VALUES (?, ?, ?)').run(rule.id, position, JSON.stringify(rule))
+  }
+
+  listCleanupRules(): CleanupRule[] {
+    return this.db.prepare('SELECT json FROM cleanup_rules ORDER BY position').all()
+      .map((r) => JSON.parse((r as { json: string }).json) as CleanupRule)
+  }
+
+  saveCleanupRule(rule: CleanupRule): void {
+    const existing = this.db.prepare('SELECT position FROM cleanup_rules WHERE id = ?').get(rule.id) as { position: number } | undefined
+    const position = existing?.position ?? (this.db.prepare('SELECT COALESCE(MAX(position), 0) + 1 AS p FROM cleanup_rules').get() as { p: number }).p
+    this.db.prepare('INSERT OR REPLACE INTO cleanup_rules (id, position, json) VALUES (?, ?, ?)').run(rule.id, position, JSON.stringify(rule))
+  }
+
+  deleteCleanupRule(id: string): void {
+    this.db.prepare('DELETE FROM cleanup_rules WHERE id = ?').run(id)
   }
 
   deleteRule(id: string): void {

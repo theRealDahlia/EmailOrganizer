@@ -2,17 +2,14 @@ import { useCallback, useEffect, useState } from 'react'
 import type { Rule } from '@organizer/core'
 import type { AccountStatus, ActivityEntry, OverviewResult, PreviewResult, ScanProgress } from '../../shared'
 import { RuleEditor } from './RuleEditor'
+import { CleanupTab } from './CleanupTab'
+import { formatBytes } from './format'
 import { CoverageNote, ScanStatus } from './ScanStatus'
 import { StorageMeter } from './StorageMeter'
 import { SubscriptionsTab } from './SubscriptionsTab'
 
-type Tab = 'overview' | 'subscriptions' | 'rules' | 'activity' | 'accounts'
+type Tab = 'overview' | 'cleanup' | 'subscriptions' | 'rules' | 'activity' | 'accounts'
 const api = window.organizer
-
-function formatBytes(n: number): string {
-  if (n < 1024 * 1024) return `${Math.max(1, Math.round(n / 1024))} KB`
-  return `${(n / (1024 * 1024)).toFixed(1)} MB`
-}
 
 const trashes = (rule: Rule) => rule.actions.some((a) => a.type === 'trash')
 
@@ -290,11 +287,12 @@ export function App() {
         </span>
       </header>
       <nav role="tablist">
-        {(['overview', 'subscriptions', 'rules', 'activity', 'accounts'] as Tab[]).map((t) => (
+        {(['overview', 'cleanup', 'subscriptions', 'rules', 'activity', 'accounts'] as Tab[]).map((t) => (
           <button key={t} role="tab" aria-selected={tab === t} onClick={() => setTab(t)}>{t[0].toUpperCase() + t.slice(1)}</button>
         ))}
       </nav>
       {tab === 'overview' && <OverviewTab overview={overview} error={overviewError} progress={progress} onRescan={() => refresh(true)} onCancel={() => { api.cancelScan() }} />}
+      {tab === 'cleanup' && <CleanupTab onApplied={() => refresh()} />}
       {tab === 'subscriptions' && <SubscriptionsTab scan={overview} onGoToRules={() => setTab('rules')} />}
       {tab === 'rules' && <RulesTab onApplied={() => refresh()} scanning={scanning} />}
       {tab === 'activity' && <ActivityTab onUndone={() => refresh()} />}

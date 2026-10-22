@@ -16,6 +16,7 @@ const BASE_FETCH_INTERVAL_MS = 222
 const MAX_FETCH_INTERVAL_MS = 2000
 const LIST_PAGE_SIZE = 500
 const MAX_INBOX_IDS = 500_000
+const MAX_SEARCH_RESULTS = 200_000
 const MAX_RETRIES = 5
 
 export class GmailApiError extends Error {
@@ -162,6 +163,21 @@ export class GmailProvider implements MailProvider {
     const list = await this.request<{ messages?: { id: string }[]; nextPageToken?: string }>(`/messages?${q}`)
     const messages = await this.getMessages((list.messages ?? []).map((m) => m.id))
     return { messages, nextCursor: list.nextPageToken }
+  }
+
+  /** messages.list with a search query: 5 units per 500 matches, and nothing is downloaded. */
+  async searchInbox(query: string, hooks: ScanHooks = {}): Promise<string[]> {
+    const ids: string[] = []
+    let pageToken: string | undefined
+    do {
+      const q = new URLSearchParams({ maxResults: String(LIST_PAGE_SIZE), q: query })
+      if (pageToken) q.set('pageToken', pageToken)
+      const page = await this.request<{ messages?: { id: string }[]; nextPageToken?: string }>(`/messages?${q}`, {}, hooks.onWait)
+      for (const m of page.messages ?? []) ids.push(m.id)
+      hooks.onProgress?.(ids.length)
+      pageToken = page.nextPageToken
+    } while (pageToken && ids.length < MAX_SEARCH_RESULTS)
+    return ids
   }
 
   async listInboxIds(unreadOnly: boolean, hooks: ScanHooks = {}): Promise<string[]> {

@@ -80,3 +80,8 @@ button.btn.danger.stopping { background: transparent; color: var(--danger); opac
 .scan-status.compact { padding: 12px 16px; }
 .scan-head .btn { margin-left: 8px; }
 .scan-clock { margin-left: auto; }
+
+.cond { align-items: center; }
+.cond label.inline { margin-bottom: 0; }
+.cond label.inline input[type="number"] { flex: none; min-width: 0; width: 80px; }
+.cond label.inline input[type="checkbox"], .form label.inline input[type="checkbox"] { flex: none; width: auto; min-width: 0; padding: 0; margin: 0; }

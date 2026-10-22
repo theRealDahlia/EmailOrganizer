@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { DemoProvider, type InboxChanges, type MailMessage, type Rule } from '@organizer/core'
+import { DemoProvider, buildQuery, type CleanupRule, type InboxChanges, type MailMessage, type Rule } from '@organizer/core'
 import type { ScanState, Store } from './db'
 import type { ScanProgress } from '../shared'
 import { OrganizerService } from './service'
@@ -7,6 +7,10 @@ import { OrganizerService } from './service'
 /** In-memory stand-in for Store, so these tests don't need the Electron-built SQLite module. */
 class FakeStore {
   rules: Rule[] = []
+  cleanup: CleanupRule[] = []
+  listCleanupRules() { return this.cleanup }
+  saveCleanupRule(r: CleanupRule) { this.cleanup = [...this.cleanup.filter((x) => x.id !== r.id), r] }
+  deleteCleanupRule(id: string) { this.cleanup = this.cleanup.filter((x) => x.id !== id) }
   messages = new Map<string, Map<string, MailMessage>>()
   activity: { id: number; undo: unknown; undone: boolean; ruleName: string; messageCount: number; at: string }[] = []
   private acct = (a: string) => this.messages.get(a) ?? this.messages.set(a, new Map()).get(a)!
@@ -81,7 +85,7 @@ class BlockingProvider extends CountingProvider {
     return super.listInboxIds(unreadOnly, hooks)
   }
   override async getMessages(ids: string[], opts?: { signal?: AbortSignal }) {
-    await this.holdDownloads
+    if (opts?.signal) await this.holdDownloads // only the scan passes a signal, so one-off lookups still work
     return super.getMessages(ids, opts)
   }
 }
@@ -130,6 +134,78 @@ describe('scan progress', () => {
     await new OrganizerService(() => provider, store, (p) => events.push(p)).overview()
     expect(events.some((e) => e.phase === 'fetching')).toBe(false)
     expect(events.at(-1)).toMatchObject({ phase: 'done', total: 0 })
+  })
+})
+
+describe('search-based cleanup', () => {
+  const oldPromos: CleanupRule = {
+    id: 'c', name: 'Old promos', filters: { category: 'promotions', olderThan: { value: 7, unit: 'd' } }, actions: [{ type: 'archive' }],
+  }
+  const query = buildQuery(oldPromos.filters, oldPromos.actions)
+
+  it('finds matches with a search and downloads only a small sample', async () => {
+    const { service, store, provider } = setup(300)
+    service.saveCleanupRule(oldPromos)
+    const expected = (await provider.searchInbox(query)).length
+    expect(expected).toBeGreaterThan(20)
+
+    const preview = await service.previewCleanup('c') // no scan has happened
+    expect(preview).toMatchObject({ query, count: expected, bytesAreEstimate: true, sampled: 20 })
+    expect(preview.bytes).toBeGreaterThan(0)
+    expect(provider.downloaded).toHaveLength(20) // a sample, not all 300
+    expect(store.loadMessages('me@x.com').size).toBe(0)
+  })
+
+  it('acts on every match in one batch and undoes it exactly', async () => {
+    const { service, provider } = setup(300)
+    service.saveCleanupRule(oldPromos)
+    const before = (await provider.listInboxIds(false)).length
+    const { count } = await service.previewCleanup('c')
+
+    const calls: number[] = []
+    const original = provider.applyActions.bind(provider)
+    provider.applyActions = async (ids, actions) => { calls.push(ids.length); return original(ids, actions) }
+
+    const entry = await service.applyCleanup('c', count)
+    expect(entry.messageCount).toBe(count)
+    expect(calls).toEqual([count]) // one call
+    expect((await provider.listInboxIds(false)).length).toBe(before - count)
+
+    await service.undo(entry.id)
+    expect((await provider.listInboxIds(false)).length).toBe(before)
+    expect(calls).toEqual([count, count])
+  })
+
+  it('works while a scan is still running, and the scan carries on and then catches up', async () => {
+    const provider = new BlockingProvider(100)
+    const hold = gate()
+    provider.holdDownloads = hold.promise
+    const service = new OrganizerService(() => provider, new FakeStore() as unknown as Store)
+    expect((await service.overview()).scanning).toBe(true)
+
+    service.saveCleanupRule(oldPromos)
+    const { count } = await service.previewCleanup('c')
+    await service.applyCleanup('c', count)
+    expect((await service.overview()).scanning).toBe(true) // applying did not stop the scan
+
+    hold.open()
+    await until(async () => !(await service.overview()).scanning)
+    expect(await service.overview()).toMatchObject({ total: 100 - count, complete: true }) // the finished view reflects the cleanup
+  })
+
+  it('refuses to apply when far more mail matches than was previewed', async () => {
+    const { service } = setup(900)
+    service.saveCleanupRule(oldPromos)
+    const { count } = await service.previewCleanup('c')
+    expect(count).toBeGreaterThan(60)
+    await expect(service.applyCleanup('c', Math.floor(count / 3))).rejects.toThrow(/Preview again/)
+    await expect(service.applyCleanup('c', count)).resolves.toMatchObject({ messageCount: count }) // the real count is fine
+  })
+
+  it('rejects unsafe or empty rules when saving', () => {
+    const { service } = setup(10)
+    expect(() => service.saveCleanupRule({ ...oldPromos, id: 'x', filters: {} })).toThrow(/whole inbox/)
+    expect(() => service.saveCleanupRule({ ...oldPromos, id: 'y', filters: { olderThan: { value: 2, unit: 'y' } }, actions: [{ type: 'trash' }] })).toThrow(/Trash/)
   })
 })
 

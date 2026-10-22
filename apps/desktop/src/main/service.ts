@@ -1,8 +1,8 @@
 import {
-  StorageScopeError, applyActionsToMessage, buildOverview, buildSubscriptions, categorize, inverseActions, parseListUnsubscribe, planChanges, validateRule,
-  type MailAction, type MailMessage, type MailProvider, type Rule, type Subscription, type UnsubscribeTargets,
+  StorageScopeError, applyActionsToMessage, buildOverview, buildQuery, reverseCleanupActions, validateCleanup, buildSubscriptions, categorize, inverseActions, parseListUnsubscribe, planChanges, validateRule,
+  type CleanupRule, type MailAction, type MailMessage, type MailProvider, type Rule, type Subscription, type UnsubscribeTargets,
 } from '@organizer/core'
-import type { ActivityEntry, OverviewResult, PreviewResult, ScanProgress, StorageResult } from '../shared'
+import type { ActivityEntry, CleanupPreview, OverviewResult, PreviewResult, ScanProgress, StorageResult } from '../shared'
 import type { Store, UndoStep } from './db'
 
 /** New messages are downloaded and saved in chunks of this size, so progress survives a stop or crash. */
@@ -54,6 +54,8 @@ export class OrganizerService {
   private cache: ScanData | null = null
   private scanning: ScanEntry | null = null
   private failure: unknown = null
+  /** Mail changed (by a cleanup or an undo) while a scan was running, so that scan's picture is already out of date. */
+  private dirty = false
   /** The last finished view, shown while a rescan is still counting the inbox so the screen never goes blank. */
   private stale: ScanData | null = null
 
@@ -126,7 +128,16 @@ export class OrganizerService {
     }
     entry.promise = this.runScan(entry).then(
       (data) => {
-        if (this.scanning === entry) { this.cache = data; this.scanning = null } // not if invalidated mid-scan
+        if (this.scanning !== entry) return // invalidated mid-scan
+        this.scanning = null
+        if (this.dirty) {
+          // mail changed during the scan: show this view meanwhile, and let the next (cheap, history-based) scan catch up
+          this.dirty = false
+          this.stale = data
+          this.cache = null
+        } else {
+          this.cache = data
+        }
       },
       (e) => {
         if (this.scanning === entry) { this.scanning = null; this.failure = e }
@@ -350,6 +361,74 @@ export class OrganizerService {
     }
   }
 
+  /** After mail changed behind the scan's back: refresh at once, or once the running scan ends. */
+  private mailChanged(): void {
+    if (this.scanning) this.dirty = true
+    else this.invalidate()
+  }
+
+  // --- Cleanup rules: found with a Gmail search, so they work on the whole inbox without any scan ---
+
+  cleanupRules(): CleanupRule[] {
+    return this.store.listCleanupRules()
+  }
+
+  saveCleanupRule(rule: CleanupRule): void {
+    const problems = validateCleanup(rule)
+    if (problems.length) throw new Error(problems.join(' '))
+    this.store.saveCleanupRule(rule)
+  }
+
+  deleteCleanupRule(id: string): void {
+    this.store.deleteCleanupRule(id)
+  }
+
+  private cleanupSetup(ruleId: string) {
+    const rule = this.store.listCleanupRules().find((r) => r.id === ruleId)
+    if (!rule) throw new Error('That cleanup rule no longer exists.')
+    const problems = validateCleanup(rule)
+    if (problems.length) throw new Error(problems.join(' '))
+    const provider = this.getProvider()
+    if (!provider.searchInbox) throw new Error('Search-based cleanup isn’t available for this account.')
+    return { rule, provider, query: buildQuery(rule.filters, rule.actions) }
+  }
+
+  async previewCleanup(ruleId: string): Promise<CleanupPreview> {
+    const { provider, query } = this.cleanupSetup(ruleId)
+    const ids = await provider.searchInbox!(query)
+
+    // Download a handful of matches (20 quota units each) to show examples and estimate the total size.
+    const SAMPLE = 20
+    const sampleIds = Array.from({ length: Math.min(SAMPLE, ids.length) }, (_, i) => ids[Math.floor((i * ids.length) / Math.min(SAMPLE, ids.length))])
+    const sample = sampleIds.length ? await provider.getMessages(sampleIds) : []
+    const exact = ids.length <= SAMPLE
+    const average = sample.length ? sample.reduce((n, m) => n + m.sizeBytes, 0) / sample.length : 0
+    return {
+      query,
+      count: ids.length,
+      samples: sample.slice(0, 8),
+      bytes: exact ? sample.reduce((n, m) => n + m.sizeBytes, 0) : Math.round(average * ids.length),
+      bytesAreEstimate: !exact,
+      sampled: sample.length,
+    }
+  }
+
+  async applyCleanup(ruleId: string, expectedCount: number): Promise<ActivityEntry> {
+    const { rule, provider, query } = this.cleanupSetup(ruleId)
+    const ids = await provider.searchInbox!(query) // search again now, so nothing stale is acted on
+    if (ids.length > expectedCount * 1.1 + 25) {
+      throw new Error(`More mail matches now (${ids.length.toLocaleString()}) than when you previewed (${expectedCount.toLocaleString()}). Preview again to review it.`)
+    }
+    if (ids.length === 0) throw new Error('Nothing matches this rule right now.')
+
+    await provider.applyActions(ids, rule.actions)
+    const undo: UndoStep[] = [{ messageIds: ids, actions: reverseCleanupActions(rule.actions) }]
+    this.updateCached(provider.accountId, ids, rule.actions)
+    this.patchViews(ids, rule.actions)
+    this.mailChanged()
+    return this.store.addActivity(rule.name, ids.length, undo)
+  }
+
   /** Changing mail while a scan is writing the same cache would race, so wait for it or stop it first. */
   private requireNoScan(): void {
     if (this.scanning) throw new Error('A scan is still running. Wait for it to finish or stop it, then try again.')
@@ -391,7 +470,6 @@ export class OrganizerService {
   }
 
   async undo(activityId: number): Promise<void> {
-    this.requireNoScan()
     const steps = this.store.takeUndo(activityId)
     if (!steps) throw new Error('Nothing to undo')
     const provider = this.getProvider()
@@ -400,6 +478,6 @@ export class OrganizerService {
       this.updateCached(provider.accountId, s.messageIds, s.actions)
       if (s.restore?.length && provider.accountId !== 'demo') this.store.upsertMessages(provider.accountId, s.restore)
     }
-    this.invalidate()
+    this.mailChanged()
   }
 }

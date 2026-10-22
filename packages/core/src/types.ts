@@ -88,6 +88,11 @@ export interface MailProvider {
    * (the caller must then list the inbox in full). Optional.
    */
   listChanges?(sinceHistoryId: string, hooks?: ScanHooks): Promise<InboxChanges | null>
+  /**
+   * Ids of inbox mail matching a Gmail search, newest first, found on Google's side without downloading
+   * any message. Optional.
+   */
+  searchInbox?(query: string, hooks?: ScanHooks): Promise<string[]>
   /** Ids of every inbox message, newest first. Cheap: no message content is fetched. */
   listInboxIds(unreadOnly: boolean, opts?: ScanHooks): Promise<string[]>
   /**

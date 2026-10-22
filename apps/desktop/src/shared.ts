@@ -1,4 +1,4 @@
-import type { MailMessage, Overview, PlannedChange, Rule, StorageQuota, Subscription } from '@organizer/core'
+import type { CleanupRule, MailMessage, Overview, PlannedChange, Rule, StorageQuota, Subscription } from '@organizer/core'
 
 export interface ActivityEntry {
   id: number
@@ -40,6 +40,18 @@ export type StorageResult =
   | { status: 'needsReconnect' }
   | { status: 'error'; message: string }
 
+export interface CleanupPreview {
+  /** the Gmail search that was run, shown so the user can see exactly what was asked */
+  query: string
+  count: number
+  /** a few of the matching messages */
+  samples: MailMessage[]
+  /** total size of the matches: exact when few, otherwise extrapolated from a sample */
+  bytes: number
+  bytesAreEstimate: boolean
+  sampled: number
+}
+
 export type UnsubscribeMethod = 'oneClick' | 'openLink' | 'openMail'
 
 export interface PreviewResult {
@@ -75,6 +87,13 @@ export interface OrganizerApi {
   connectGmail(): Promise<void>
   disconnect(): Promise<void>
   listRules(): Promise<Rule[]>
+  cleanupRules(): Promise<CleanupRule[]>
+  saveCleanupRule(rule: CleanupRule): Promise<void>
+  deleteCleanupRule(id: string): Promise<void>
+  /** Searches Gmail for the rule's matches; changes nothing. */
+  previewCleanup(ruleId: string): Promise<CleanupPreview>
+  /** Runs the rule on whatever Gmail finds now, unless far more matches than `expectedCount` appeared. */
+  applyCleanup(ruleId: string, expectedCount: number): Promise<ActivityEntry>
   subscriptions(): Promise<Subscription[]>
   unsubscribe(senderEmail: string, method: UnsubscribeMethod): Promise<void>
   /** Creates (but does not run) a rule that archives everything from this sender. */
