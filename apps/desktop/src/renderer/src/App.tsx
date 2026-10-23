@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from 'react'
 import type { Rule } from '@organizer/core'
 import type { AccountStatus, ActivityEntry, OverviewResult, PreviewResult, ScanProgress } from '../../shared'
 import { RuleEditor } from './RuleEditor'
@@ -8,6 +8,7 @@ import { CoverageNote, ScanStatus } from './ScanStatus'
 import { StorageMeter } from './StorageMeter'
 import { SubscriptionsTab } from './SubscriptionsTab'
 import { Avatar, Icon, PAGE_HUE, categoryHue, hue } from './Icons'
+import { CountUp } from './Motion'
 
 type Tab = 'overview' | 'cleanup' | 'subscriptions' | 'rules' | 'activity' | 'accounts'
 const TABS: Tab[] = ['overview', 'cleanup', 'subscriptions', 'rules', 'activity', 'accounts']
@@ -57,16 +58,16 @@ function OverviewTab({ overview, error, progress, onRescan, onCancel }: {
       <div className="stats">
         <div className="card stat" style={hue(245)}>
           <span className="tile"><Icon name="inbox" /></span>
-          <b>{overview.total.toLocaleString()}</b>
+          <b><CountUp value={overview.total} /></b>
           <span>{overview.complete && !overview.scanning ? 'messages in inbox' : `of ${overview.inboxTotal.toLocaleString()} scanned`}</span>
         </div>
         <div className="card stat" style={hue(28)}>
           <span className="tile"><Icon name="unread" /></span>
-          <b>{overview.unread.toLocaleString()}</b><span>unread</span>
+          <b><CountUp value={overview.unread} /></b><span>unread</span>
         </div>
         <div className="card stat" style={hue(330)}>
           <span className="tile"><Icon name="subscriptions" /></span>
-          <b>{overview.subscriptions.length}</b><span>subscriptions</span>
+          <b><CountUp value={overview.subscriptions.length} /></b><span>subscriptions</span>
         </div>
       </div>
       <div className="grid">
@@ -300,6 +301,26 @@ export function App() {
   }, [scanning, refresh])
 
 
+  // The sidebar's selection pill is one element moved under the active item, so switching pages slides it.
+  const navRef = useRef<HTMLElement>(null)
+  const [pill, setPill] = useState<CSSProperties | null>(null)
+  useLayoutEffect(() => {
+    const nav = navRef.current
+    if (!nav) return
+    const place = () => {
+      const el = nav.querySelector<HTMLElement>('[aria-selected="true"]')
+      if (!el) return
+      setPill((prev) => ({
+        transform: `translate(${el.offsetLeft}px, ${el.offsetTop}px)`, width: el.offsetWidth, height: el.offsetHeight,
+        ...(!prev && { transition: 'none' }), // first placement: appear in place rather than slide in from the corner
+      }))
+    }
+    place()
+    const observer = new ResizeObserver(place)
+    observer.observe(nav)
+    return () => observer.disconnect()
+  }, [tab])
+
   const account = status?.mode === 'gmail' ? status.email ?? 'Gmail' : 'Demo mailbox'
   const head = PAGES[tab]
 
@@ -307,7 +328,8 @@ export function App() {
     <div className="shell">
       <aside className="sidebar">
         <div className="brand"><span className="brand-mark"><Icon name="subscriptions" size={16} /></span>Email Organizer</div>
-        <nav role="tablist" aria-orientation="vertical">
+        <nav role="tablist" aria-orientation="vertical" ref={navRef}>
+          {pill && <span className="nav-pill" style={pill} aria-hidden="true" />}
           {TABS.map((t) => (
             <button key={t} role="tab" className="nav-item" aria-selected={tab === t} onClick={() => setTab(t)}>
               <span className="nav-ico" style={hue(PAGE_HUE[t])}><Icon name={t} size={16} /></span>{PAGES[t].title}
@@ -323,7 +345,7 @@ export function App() {
         </div>
       </aside>
       <main className="main">
-        <div className="content">
+        <div className="content" key={tab /* remount so the page's entrance plays on every switch */}>
           <div className="page-head">
             <div><h1>{head.title}</h1><p>{head.blurb}</p></div>
             {tab === 'overview' && overview?.complete && !overview.scanning && <button className="btn" onClick={() => refresh(true)}>Rescan inbox</button>}

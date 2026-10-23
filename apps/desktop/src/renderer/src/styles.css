@@ -176,6 +176,53 @@ footer.storage { font-size: 12px; padding: 12px; background: var(--panel); borde
   * { transition: none !important; }
 }
 
+/* ---- Motion ----
+   Durations come from the 150/200/300ms tokens and only transform and opacity animate.
+   Content enters with a short rise, staggered 40ms per sibling via --i. */
+:root { --motion-150: 150ms; --motion-200: 200ms; --motion-300: 300ms; --ease-out: cubic-bezier(0.16, 1, 0.3, 1); }
+@keyframes rise { from { opacity: 0; transform: translateY(8px); } }
+@keyframes rise-sm { from { opacity: 0; transform: translateY(4px); } }
+@keyframes grow { from { transform: scaleX(0); } }
+
+/* backwards fill, so once finished the animation stops holding transform and hover lifts still work */
+.content > *, .stats > *, .grid > * { animation: rise var(--motion-300) var(--ease-out) backwards; animation-delay: calc(var(--i, 0) * 40ms); }
+.cat-row, tbody tr, .card > .row, .notice { animation: rise-sm var(--motion-300) var(--ease-out) backwards; animation-delay: calc(80ms + var(--i, 0) * 40ms); }
+:is(.content, .stats, .grid, .card, tbody) > :nth-child(2) { --i: 1; }
+:is(.content, .stats, .grid, .card, tbody) > :nth-child(3) { --i: 2; }
+:is(.content, .stats, .grid, .card, tbody) > :nth-child(4) { --i: 3; }
+:is(.content, .stats, .grid, .card, tbody) > :nth-child(5) { --i: 4; }
+:is(.content, .stats, .grid, .card, tbody) > :nth-child(6) { --i: 5; }
+:is(.content, .stats, .grid, .card, tbody) > :nth-child(7) { --i: 6; }
+:is(.content, .stats, .grid, .card, tbody) > :nth-child(n+8) { --i: 7; }
+
+/* Bars fill from the left once their row has landed. */
+.bar i, .meter:not(.scan-meter) i { transform-origin: left; animation: grow var(--motion-300) var(--ease-out) backwards; animation-delay: calc(160ms + var(--i, 0) * 40ms); }
+
+/* Sidebar: one selection pill that slides between items instead of each item lighting up. */
+.sidebar nav { position: relative; }
+.nav-item { position: relative; z-index: 1; }
+.nav-item[aria-selected="true"] { background: none; box-shadow: none; }
+.nav-pill { position: absolute; top: 0; left: 0; z-index: 0; border-radius: 8px; background: var(--panel); box-shadow: var(--shadow), 0 0 0 1px var(--line); transition: transform var(--motion-300) var(--ease-out); pointer-events: none; }
+.nav-ico svg { transition: transform var(--motion-200) var(--ease-out); }
+.nav-item:hover .nav-ico svg { transform: translateY(-1px); }
+
+/* Hover feedback */
+.stat .tile, .idea .tile { transition: transform var(--motion-200) var(--ease-out); }
+.stat:hover .tile { transform: translateY(-2px) rotate(-4deg); }
+.idea { transition: transform var(--motion-200) var(--ease-out), box-shadow var(--motion-200) var(--ease-out); }
+.idea:hover { transform: translateY(-2px); box-shadow: 0 12px 28px -14px hsl(var(--hue) 60% 40% / .45); }
+.idea:hover .tile { transform: scale(1.06); }
+tbody tr { transition: background-color var(--motion-150) var(--ease-out); }
+tbody tr:hover { background: color-mix(in srgb, var(--text) 3%, transparent); }
+button.btn { transition: background-color var(--motion-150), border-color var(--motion-150), box-shadow var(--motion-200) var(--ease-out), transform var(--motion-150) var(--ease-out); }
+button.btn.primary:not(:disabled):hover { transform: translateY(-1px); box-shadow: 0 8px 20px -8px hsl(255 80% 55% / .75); }
+button.btn.primary:not(:disabled):active { transform: translateY(0); }
+
+@media (prefers-reduced-motion: reduce) {
+  .content :not(.spinner):not(.scan-meter i), .content, .meter:not(.scan-meter) i { animation: none !important; }
+  .stat:hover .tile, .idea:hover, .idea:hover .tile, .nav-item:hover .nav-ico svg, button.btn.primary:not(:disabled):hover { transform: none; }
+}
+
 @media (max-width: 760px) {
   .shell { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
   .sidebar { flex-direction: row; align-items: center; padding: 8px 12px; border-right: 0; border-bottom: 1px solid var(--line); overflow-x: auto; }
