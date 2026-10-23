@@ -1,9 +1,10 @@
-import { Fragment, useEffect, useMemo, useState } from 'react'
+import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { SenderStat } from '@organizer/core'
 import type { ScanProgress, SendersResult } from '../../shared'
 import { Avatar, Icon, hue } from './Icons'
 import { ScanStatus } from './ScanStatus'
 import { SenderPanel } from './SenderPanel'
+import { searchMatcher } from './search'
 
 const api = window.organizer
 const PAGE = 50
@@ -23,6 +24,16 @@ const sorters: Record<Sort, (a: SenderStat, b: SenderStat) => number> = {
   recent: (a, b) => b.lastDate.localeCompare(a.lastDate),
   name: (a, b) => (a.name || a.email).localeCompare(b.name || b.email, undefined, { sensitivity: 'base' }),
 }
+
+/**
+ * How the page looked when the user last left it: what they searched for, how it's sorted and filtered, how many rows they
+ * had opened up, which sender was expanded, and how far they had scrolled. It lives for as long as the app is open, so
+ * leaving for another page and coming back finds everything where it was.
+ */
+interface View { query: string; sort: Sort; subsOnly: boolean; unreadOnly: boolean; shown: number; open: string | null; scrollTop: number }
+const remembered: View = { query: '', sort: 'count', subsOnly: false, unreadOnly: false, shown: PAGE, open: null, scrollTop: 0 }
+/** The last search sent from the command palette that this page has already acted on, so coming back doesn't repeat it. */
+let consumedSearch: object | undefined
 
 /** The Latest column is hidden on narrow windows (see styles.css), so the expanded row must span one column fewer. */
 function useNarrow(): boolean {
@@ -57,12 +68,14 @@ export function SendersTab({ scanKey, initialQuery, progress, onCancel, onScanAl
 }) {
   const [data, setData] = useState<SendersResult | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [query, setQuery] = useState('')
-  const [sort, setSort] = useState<Sort>('count')
-  const [subsOnly, setSubsOnly] = useState(false)
-  const [unreadOnly, setUnreadOnly] = useState(false)
-  const [shown, setShown] = useState(PAGE)
-  const [open, setOpen] = useState<string | null>(null)
+  const [query, setQuery] = useState(remembered.query)
+  const [sort, setSort] = useState<Sort>(remembered.sort)
+  const [subsOnly, setSubsOnly] = useState(remembered.subsOnly)
+  const [unreadOnly, setUnreadOnly] = useState(remembered.unreadOnly)
+  const [shown, setShown] = useState(remembered.shown)
+  const [open, setOpen] = useState<string | null>(remembered.open)
+  const restoredScroll = useRef(false)
+  const arrivedWithSearch = useRef(!!initialQuery && initialQuery !== consumedSearch)
   const narrow = useNarrow()
 
   const load = () => {
@@ -70,14 +83,36 @@ export function SendersTab({ scanKey, initialQuery, progress, onCancel, onScanAl
     api.senders().then(setData, (e) => setError(e instanceof Error ? e.message : String(e)))
   }
   useEffect(load, [scanKey])
-  useEffect(() => setShown(PAGE), [query, sort, subsOnly, unreadOnly])
-  useEffect(() => { if (initialQuery) setQuery(initialQuery.text) }, [initialQuery])
+  // Changing what's shown starts the list from the top again, but opening the page must keep the rows the user had opened.
+  const firstRun = useRef(true)
+  useEffect(() => { if (firstRun.current) { firstRun.current = false; return } setShown(PAGE) }, [query, sort, subsOnly, unreadOnly])
+  // A search from the command palette replaces what was remembered, and starts at the top.
+  useEffect(() => {
+    if (!initialQuery || initialQuery === consumedSearch) return
+    consumedSearch = initialQuery
+    setQuery(initialQuery.text); setSubsOnly(false); setUnreadOnly(false); setOpen(null)
+  }, [initialQuery])
+  useEffect(() => { Object.assign(remembered, { query, sort, subsOnly, unreadOnly, shown, open }) }, [query, sort, subsOnly, unreadOnly, shown, open])
+
+  // Back to where the user was scrolled, once the rows exist to scroll to; and keep track of it from then on.
+  useLayoutEffect(() => {
+    if (restoredScroll.current || !data) return
+    restoredScroll.current = true
+    const main = document.querySelector('.main')
+    if (main) main.scrollTop = arrivedWithSearch.current ? 0 : remembered.scrollTop
+  }, [data])
+  // Taken as the page is torn down, while its content still fills the scroll area. Watching scroll events instead would
+  // also record the jump to the top that the next, shorter page causes.
+  useLayoutEffect(() => () => {
+    const main = document.querySelector('.main')
+    if (main && restoredScroll.current) remembered.scrollTop = main.scrollTop
+  }, [])
 
   const rows = useMemo(() => {
     if (!data) return []
-    const q = query.trim().toLowerCase()
+    const matches = searchMatcher(query)
     return data.senders
-      .filter((s) => (!q || s.email.includes(q) || s.name.toLowerCase().includes(q)) && (!subsOnly || s.hasUnsubscribe) && (!unreadOnly || s.unread > 0))
+      .filter((s) => matches(`${s.name} ${s.email}`) && (!subsOnly || s.hasUnsubscribe) && (!unreadOnly || s.unread > 0))
       .sort(sorters[sort])
   }, [data, query, sort, subsOnly, unreadOnly])
 

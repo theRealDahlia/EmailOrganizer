@@ -5,6 +5,7 @@ import { CoverageNote } from './ScanStatus'
 import { Avatar, Icon } from './Icons'
 import { SenderPanel } from './SenderPanel'
 import { UnsubStatus } from './Badges'
+import { searchMatcher } from './search'
 
 const api = window.organizer
 
@@ -36,8 +37,8 @@ export function SubscriptionsTab({ scan, onGoToCleanup, onChanged, onOpenCleanup
   }
 
   const matches = useMemo(() => {
-    const q = query.trim().toLowerCase()
-    return (subs ?? []).filter((s) => !q || s.email.includes(q) || s.name.toLowerCase().includes(q))
+    const matches = searchMatcher(query)
+    return (subs ?? []).filter((s) => matches(`${s.name} ${s.email}`))
   }, [subs, query])
 
   if (error && !subs) return <div className="notice"><p className="error">{error}</p><button className="btn" onClick={load}>Try again</button></div>
