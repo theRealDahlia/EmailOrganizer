@@ -9,7 +9,7 @@ import { SecretStore } from './secrets'
 import { Settings } from './settings'
 import { AiRules } from './ai'
 import { Background } from './background'
-import { AUTO_INTERVAL_MS, OrganizerService } from './service'
+import { AUTO_INTERVAL_MS, NEW_MAIL_INTERVAL_MS, OrganizerService } from './service'
 
 let store: Store
 let settings: Settings
@@ -171,6 +171,8 @@ app.whenReady().then(() => {
   const runAutomatic = () => { service.runAutomatic().catch(() => {}) }
   setTimeout(runAutomatic, 20_000)
   setInterval(runAutomatic, AUTO_INTERVAL_MS)
+  // New mail: look once a minute. The window refreshes itself when a scan finishes, so it stays current without being asked.
+  setInterval(() => { service.checkNewMail().catch(() => {}) }, NEW_MAIL_INTERVAL_MS)
   createWindow(!background.startedHidden) // started by the system at login with "keep running" on: stay in the tray until asked
   app.on('activate', () => BrowserWindow.getAllWindows().length === 0 && createWindow())
 })

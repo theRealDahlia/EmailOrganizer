@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { DemoProvider, applyActionsToMessage, buildQuery, type CleanupRule, type InboxChanges, type MailMessage, type Rule } from '@organizer/core'
+import { DemoProvider, GmailProvider, applyActionsToMessage, buildQuery, type CleanupRule, type InboxChanges, type MailMessage, type Rule } from '@organizer/core'
 import type { ScanState, Store } from './db'
 import type { ScanProgress } from '../shared'
 import { OrganizerService, describeRun } from './service'
@@ -1215,5 +1215,480 @@ describe('describing an automatic run', () => {
     expect(first.lastSummary).toBe(`Archived ${first.lastChanged} messages`)
     const second = await service.runAutomatic()
     expect(second).toMatchObject({ lastChanged: 0, lastSummary: '' })
+  })
+})
+
+describe('checking for new mail on its own', () => {
+  /** 60 messages, one of them (demo-0) archived at first so it can "arrive" later. */
+  const setupPoll = async () => {
+    const provider = new HistoryProvider(60)
+    const store = new FakeStore()
+    await provider.elsewhere('demo-0', { inbox: false })
+    const events: ScanProgress[] = []
+    const service = new OrganizerService(() => provider, store as unknown as Store, (p) => events.push(p))
+    return { provider, store, service, events }
+  }
+
+  it('picks up mail that arrived, downloading only that', async () => {
+    const { provider, service } = await setupPoll()
+    expect((await service.overview()).total).toBe(59)
+
+    await provider.elsewhere('demo-0', { inbox: true })
+    provider.downloaded = []
+    await service.checkNewMail()
+    expect(provider.downloaded).toEqual(['demo-0'])
+    expect(await service.overview()).toMatchObject({ total: 60, complete: true, scanning: false })
+    expect(provider.downloaded).toEqual(['demo-0']) // looking at the screen needed nothing more
+  })
+
+  it('does nothing when nothing arrived, and downloads nothing', async () => {
+    const { provider, service } = await setupPoll()
+    await service.overview()
+    provider.downloaded = []
+    provider.listCalls = 0
+    await service.checkNewMail()
+    expect(provider.downloaded).toEqual([])
+    expect(provider.listCalls).toBe(0) // history said nothing changed, so the inbox wasn't listed again
+    expect((await service.overview()).total).toBe(59)
+  })
+
+  it('never starts the first, slow scan of a mailbox', async () => {
+    const { provider, service, events } = await setupPoll()
+    await service.checkNewMail()
+    expect(events).toEqual([])
+    expect(provider.downloaded).toEqual([])
+    expect(provider.listCalls).toBe(0)
+  })
+
+  it('carries on from a saved checkpoint after a restart', async () => {
+    const { provider, store } = await setupPoll()
+    await new OrganizerService(() => provider, store as unknown as Store).overview()
+    await provider.elsewhere('demo-0', { inbox: true })
+    provider.downloaded = []
+
+    const restarted = new OrganizerService(() => provider, store as unknown as Store) // a new session, nothing in memory
+    await restarted.checkNewMail()
+    expect(provider.downloaded).toEqual(['demo-0'])
+    expect((await restarted.overview()).total).toBe(60)
+  })
+
+  it('stays quiet when a check fails, and the next screen load still works', async () => {
+    const { provider, service } = await setupPoll()
+    await service.overview()
+    await provider.elsewhere('demo-0', { inbox: true })
+    const listChanges = provider.listChanges.bind(provider)
+    provider.listChanges = async () => { throw new Error('offline') }
+    await expect(service.checkNewMail()).resolves.toBeUndefined() // no error reaches the app
+
+    provider.listChanges = listChanges
+    expect((await service.overview()).total).toBe(60) // the failure wasn't left behind to be thrown at the user
+  })
+
+  it('refreshes the inbox counts only when mail arrived', async () => {
+    const { provider, service } = await setupPoll()
+    await service.overview()
+    const first = service.inboxCounts()
+    expect((await first)!.total).toBe(59)
+
+    await service.checkNewMail()
+    expect(service.inboxCounts()).toBe(first) // nothing arrived: the answer is kept
+
+    await provider.elsewhere('demo-0', { inbox: true })
+    await service.checkNewMail()
+    const second = service.inboxCounts()
+    expect(second).not.toBe(first)
+    expect((await second)!.total).toBe(60)
+  })
+
+  it('does not run two checks at once, or interrupt a scan in progress', async () => {
+    const { provider, service } = await setupPoll()
+    await service.overview()
+    await provider.elsewhere('demo-0', { inbox: true })
+    provider.downloaded = []
+    await Promise.all([service.checkNewMail(), service.checkNewMail()])
+    expect(provider.downloaded).toEqual(['demo-0']) // once, not twice
+  })
+
+  it('leaves the built-in demo mailbox alone', async () => {
+    const events: ScanProgress[] = []
+    await new OrganizerService(() => new DemoProvider(10), new FakeStore() as unknown as Store, (p) => events.push(p)).checkNewMail()
+    expect(events).toEqual([])
+  })
+})
+
+describe('running automatic rules when mail is scanned', () => {
+  /** A scanned mailbox in which demo-0 is archived, so it can arrive later; its sender is who the rules are about. */
+  const setupArrival = async () => {
+    const provider = new HistoryProvider(60)
+    const store = new FakeStore()
+    await provider.elsewhere('demo-0', { inbox: false })
+    const service = new OrganizerService(() => provider, store as unknown as Store)
+    const sender = (await provider.getMessages(['demo-0']))[0].from.email
+    await service.overview() // the first scan; there are no automatic rules yet
+    await service.runAutomatic()
+    const inbox = () => provider.searchInbox(`in:inbox from:(${sender})`)
+    return { provider, store, service, sender, inbox }
+  }
+  const saved = (sender: string) => ({ id: 'auto', name: 'Auto', filters: { from: sender }, actions: [{ type: 'archive' as const }], auto: true })
+
+  it('applies a cleanup as soon as a check finds new mail, without waiting for the half hour', async () => {
+    const { provider, store, service, sender, inbox } = await setupArrival()
+    store.saveCleanupRule(saved(sender)) // saved straight to the store, so saving it doesn't run it
+    expect((await inbox()).length).toBeGreaterThan(0)
+    expect(store.activity).toEqual([])
+
+    await provider.elsewhere('demo-0', { inbox: true })
+    await service.checkNewMail()
+    await until(async () => store.activity.length > 0)
+    expect((await inbox()).length).toBe(0)
+    expect(store.activity[0]).toMatchObject({ ruleName: 'Auto (automatic)', automatic: true })
+  })
+
+  it('does not run anything when a check finds nothing new', async () => {
+    const { store, service, sender, inbox } = await setupArrival()
+    for (let i = 0; i < 5; i++) { await service.checkNewMail(); await new Promise((r) => setTimeout(r, 30)) } // the first scan armed two follow-up looks; let them pass
+    store.saveCleanupRule(saved(sender))
+    await service.checkNewMail()
+    await new Promise((r) => setTimeout(r, 100))
+    expect(store.activity).toEqual([])
+    expect((await inbox()).length).toBeGreaterThan(0)
+  })
+
+  it('also runs when a scan the user started finds new mail', async () => {
+    const { provider, store, service, sender, inbox } = await setupArrival()
+    store.saveCleanupRule(saved(sender))
+    await provider.elsewhere('demo-0', { inbox: true })
+    await service.overview(true) // a refresh from the screen, not the background check
+    await until(async () => store.activity.length > 0)
+    expect((await inbox()).length).toBe(0)
+  })
+
+  it('applies automatic rules that work on scanned mail to the newly scanned messages', async () => {
+    const { provider, store, service, sender } = await setupArrival()
+    store.saveRule({ id: 'r', name: 'Archive sender', enabled: true, match: 'all', auto: true, conditions: [{ field: 'senderEmail', op: 'equals', value: sender }], actions: [{ type: 'archive' }] })
+    await provider.elsewhere('demo-0', { inbox: true })
+    await service.checkNewMail()
+    await until(async () => store.activity.some((a) => a.ruleName === 'Archive sender (automatic)'))
+    expect((await provider.searchInbox(`in:inbox from:(${sender})`)).length).toBe(0)
+  })
+
+  it('does not run when the scan was stopped', async () => {
+    const provider = new HistoryProvider(450)
+    const store = new FakeStore()
+    const service = new OrganizerService(() => provider, store as unknown as Store)
+    store.saveCleanupRule({ id: 'auto', name: 'Auto', filters: { from: 'deals@shopmart.example' }, actions: [{ type: 'archive' }], auto: true })
+    provider.onFetch = () => service.cancelScan() // stop after the first chunk
+    await service.overview()
+    await new Promise((r) => setTimeout(r, 100))
+    expect(store.activity).toEqual([])
+  })
+})
+
+
+/** A small stateful Gmail: it answers the calls the app makes (listing, search, metadata, history, batchModify) from real state. */
+class FakeGmail {
+  version = 100
+  nextId = 1
+  messages: { id: string; labelIds: string[]; from: string; subject: string; internalDate: string; size: number }[] = []
+  history: { v: number; record: Record<string, unknown> }[] = []
+  modified: { ids: string[]; add: string[]; remove: string[] }[] = []
+  searches: string[] = []
+  /** a search that hides mail added in the last `lagMs`, like a search index that hasn't caught up yet */
+  indexLag = new Set<string>()
+  labels = [{ id: 'INBOX', name: 'INBOX' }, { id: 'UNREAD', name: 'UNREAD' }, { id: 'TRASH', name: 'TRASH' }]
+
+  add(from: string, subject = 'Hello', labelIds = ['INBOX', 'UNREAD']) {
+    const id = `m${this.nextId++}`
+    this.messages.push({ id, labelIds, from, subject, internalDate: String(Date.now() - this.nextId * 1000), size: 2000 })
+    return id
+  }
+  /** mail arriving now: it also goes in the history log */
+  arrive(from: string, subject = 'Site is down') {
+    const id = this.add(from, subject)
+    this.version++
+    this.history.push({ v: this.version, record: { messagesAdded: [{ message: { id, labelIds: ['INBOX', 'UNREAD'] } }] } })
+    return id
+  }
+  private ids(filter: (m: FakeGmail['messages'][number]) => boolean) { return this.messages.filter(filter).map((m) => ({ id: m.id })) }
+
+  fetch = (async (input: string | URL, init?: RequestInit) => {
+    const url = new URL(String(input))
+    const path = url.pathname.replace('/gmail/v1/users/me', '')
+    const json = (body: unknown) => new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    if (path === '/profile') return json({ emailAddress: 'me@x.com', historyId: String(this.version) })
+    if (path === '/labels' && init?.method === 'POST') {
+      const name = JSON.parse(String(init.body)).name as string
+      const label = { id: `Label_${this.labels.length + 1}`, name }
+      this.labels.push(label)
+      return json(label)
+    }
+    if (path === '/labels') return json({ labels: this.labels })
+    if (path === '/history') {
+      const start = Number(url.searchParams.get('startHistoryId'))
+      return json({ history: this.history.filter((h) => h.v > start).map((h) => h.record), historyId: String(this.version) })
+    }
+    if (path === '/messages/batchModify' && init?.method === 'POST') {
+      const body = JSON.parse(String(init.body)) as { ids: string[]; addLabelIds?: string[]; removeLabelIds?: string[] }
+      this.modified.push({ ids: body.ids, add: body.addLabelIds ?? [], remove: body.removeLabelIds ?? [] })
+      this.version++
+      for (const m of this.messages.filter((x) => body.ids.includes(x.id))) {
+        m.labelIds = [...m.labelIds.filter((l) => !(body.removeLabelIds ?? []).includes(l)), ...(body.addLabelIds ?? []).filter((l) => !m.labelIds.includes(l))]
+        for (const l of body.removeLabelIds ?? []) this.history.push({ v: this.version, record: { labelsRemoved: [{ message: { id: m.id }, labelIds: [l] }] } })
+      }
+      return new Response(null, { status: 204 })
+    }
+    if (path === '/messages') {
+      const labels = url.searchParams.getAll('labelIds')
+      const q = url.searchParams.get('q')
+      if (q) {
+        this.searches.push(q)
+        const from = q.match(/from:\(([^)]*)\)/)?.[1]?.toLowerCase()
+        const inInbox = q.includes('in:inbox')
+        return json({ messages: this.ids((m) => !this.indexLag.has(m.id) && (!inInbox || m.labelIds.includes('INBOX')) && (!from || m.from.toLowerCase().includes(from))) })
+      }
+      return json({ messages: this.ids((m) => labels.every((l) => m.labelIds.includes(l))) })
+    }
+    const one = path.match(/^\/messages\/(.+)$/)
+    if (one) {
+      const m = this.messages.find((x) => x.id === one[1])
+      if (!m) return new Response('{"error":{"message":"gone"}}', { status: 404 })
+      return json({ id: m.id, labelIds: m.labelIds, sizeEstimate: m.size, internalDate: m.internalDate, payload: { headers: [{ name: 'From', value: m.from }, { name: 'Subject', value: m.subject }] } })
+    }
+    throw new Error(`unexpected request: ${init?.method ?? 'GET'} ${path}`)
+  }) as typeof fetch
+  provider() { return new GmailProvider({ accountId: 'me@x.com', getAccessToken: async () => 'tok', fetch: this.fetch, sleep: async () => {} }) }
+}
+
+describe('new mail through a Gmail-shaped mailbox', () => {
+  const SITE = 'Site Monitors <alerts@sitemonitors.example>'
+  const setupGmail = async () => {
+    const gmail = new FakeGmail()
+    for (let i = 0; i < 6; i++) gmail.add(`Friend ${i} <friend${i}@mail.example>`, `Hi ${i}`)
+    gmail.add(SITE, 'Site is down (old)')
+    const store = new FakeStore()
+    const provider = gmail.provider()
+    const service = new OrganizerService(() => provider, store as unknown as Store)
+    await service.overview() // the first scan
+    return { gmail, store, service }
+  }
+
+  it('archives a site-monitors email when it arrives, for an automatic cleanup', async () => {
+    const { gmail, store, service } = await setupGmail()
+    store.saveCleanupRule({ id: 'auto', name: 'Site monitors', filters: { from: 'alerts@sitemonitors.example' }, actions: [{ type: 'archive' }], auto: true })
+    const id = gmail.arrive(SITE)
+
+    await service.checkNewMail()
+    await until(async () => gmail.modified.length > 0)
+    expect(gmail.modified.at(-1)!.ids).toContain(id)
+    expect(gmail.modified.at(-1)!.remove).toContain('INBOX')
+  })
+
+  it('does the same when the rule is about the sender’s name, as typed into the form', async () => {
+    const { gmail, store, service } = await setupGmail()
+    store.saveCleanupRule({ id: 'auto', name: 'Site monitors', filters: { from: 'site monitors' }, actions: [{ type: 'archive' }], auto: true })
+    const id = gmail.arrive(SITE)
+    await service.checkNewMail()
+    await until(async () => gmail.modified.length > 0)
+    expect(gmail.modified.at(-1)!.ids).toContain(id)
+  })
+
+  it('applies an automatic rule that works on scanned mail', async () => {
+    const { gmail, store, service } = await setupGmail()
+    store.saveRule({ id: 'r', name: 'Site monitors', enabled: true, match: 'all', auto: true, conditions: [{ field: 'senderEmail', op: 'equals', value: 'alerts@sitemonitors.example' }], actions: [{ type: 'archive' }] })
+    const id = gmail.arrive(SITE)
+    await service.checkNewMail()
+    await until(async () => gmail.modified.length > 0)
+    expect(gmail.modified.at(-1)!.ids).toContain(id)
+  })
+})
+
+describe('automatic rules that must not miss new mail', () => {
+  const SITE = 'Site Monitors <alerts@sitemonitors.example>'
+  const setupMiss = async () => {
+    const gmail = new FakeGmail()
+    for (let i = 0; i < 6; i++) gmail.add(`Friend ${i} <friend${i}@mail.example>`, `Hi ${i}`)
+    const store = new FakeStore()
+    const provider = gmail.provider() // one object, as in the app, so the service recognises its own cached scan
+    const service = new OrganizerService(() => provider, store as unknown as Store)
+    await service.overview()
+    store.saveCleanupRule({ id: 'auto', name: 'Site monitors', filters: { from: 'alerts@sitemonitors.example' }, actions: [{ type: 'archive' }], auto: true })
+    return { gmail, store, service }
+  }
+
+  it('catches an email that Gmail’s search can’t find yet, on the next check', async () => {
+    const { gmail, service } = await setupMiss()
+    const id = gmail.arrive(SITE)
+    gmail.indexLag.add(id) // history knows about it; search doesn't yet
+
+    await service.checkNewMail() // finds the new mail, runs the rules, and the search comes up empty
+    await new Promise((r) => setTimeout(r, 50))
+    expect(gmail.modified).toEqual([])
+
+    gmail.indexLag.clear() // the search index catches up
+    await service.checkNewMail() // nothing new this time, but the rules are looked at once more
+    await until(async () => gmail.modified.length > 0)
+    expect(gmail.modified[0].ids).toContain(id)
+  })
+
+  it('stops looking again after a couple of checks, so quiet minutes cost nothing', async () => {
+    const { gmail, service } = await setupMiss()
+    gmail.arrive(SITE)
+    await service.checkNewMail()
+    await until(async () => gmail.modified.length > 0)
+    for (let i = 0; i < 2; i++) { await service.checkNewMail(); await new Promise((r) => setTimeout(r, 30)) } // the two follow-up looks
+    const before = gmail.searches.length
+    for (let i = 0; i < 3; i++) await service.checkNewMail()
+    await new Promise((r) => setTimeout(r, 50))
+    expect(gmail.searches.length).toBe(before) // no more rule searches while nothing arrives
+  })
+
+  it('does not lose a trigger that arrives while a run is already in progress', async () => {
+    const provider = new CountingProvider(30)
+    const store = new FakeStore()
+    const service = new OrganizerService(() => provider, store as unknown as Store)
+    store.saveCleanupRule({ id: 'auto', name: 'Nobody', filters: { from: 'nobody@nowhere.example' }, actions: [{ type: 'archive' }], auto: true })
+    const searches: string[] = []
+    const hold = gate()
+    let first = true
+    provider.searchInbox = async (q: string) => { searches.push(q); if (first) { first = false; await hold.promise } return [] }
+
+    const running = service.runAutomatic() // in progress, held inside its first search
+    await until(async () => searches.length === 1)
+    expect(service.runAutomatic()).toBe(running) // new mail arrives now: still one run at a time...
+    hold.open()
+    await running
+    await until(async () => searches.length === 2) // ...but the rules are checked again afterwards
+    await new Promise((r) => setTimeout(r, 50))
+    expect(searches).toHaveLength(2)
+  })
+
+  it('runs once, not twice, when nothing asked for another pass', async () => {
+    const provider = new CountingProvider(30)
+    const store = new FakeStore()
+    const service = new OrganizerService(() => provider, store as unknown as Store)
+    store.saveCleanupRule({ id: 'auto', name: 'Nobody', filters: { from: 'nobody@nowhere.example' }, actions: [{ type: 'archive' }], auto: true })
+    let count = 0
+    provider.searchInbox = async () => { count++; return [] }
+    await service.runAutomatic()
+    await new Promise((r) => setTimeout(r, 50))
+    expect(count).toBe(1)
+  })
+})
+
+
+describe('"Auto-archive future mail" switched to Auto', () => {
+  const SITE = 'Site Monitors <alerts@sitemonitors.example>'
+  const ADDRESS = 'alerts@sitemonitors.example'
+
+  it('labels and archives a site-monitors email that arrives later', async () => {
+    const gmail = new FakeGmail()
+    for (let i = 0; i < 6; i++) gmail.add(`Friend ${i} <friend${i}@mail.example>`, `Hi ${i}`)
+    const old = gmail.add(SITE, 'Site is down (old)')
+    const store = new FakeStore()
+    const provider = gmail.provider() // one object, as in the app
+    const service = new OrganizerService(() => provider, store as unknown as Store)
+    await service.overview() // the app has scanned the inbox
+
+    const rule = service.createArchiveRule(ADDRESS) // the button on a sender's panel
+    service.saveRule({ ...rule, auto: true }) // the Auto box on its row, which runs it at once on what is already there
+    await until(async () => gmail.modified.some((m) => m.ids.includes(old)))
+
+    const id = gmail.arrive(SITE)
+    await service.checkNewMail()
+    await until(async () => gmail.modified.some((m) => m.ids.includes(id)))
+    const change = gmail.modified.find((m) => m.ids.includes(id))!
+    expect(change.remove).toContain('INBOX')
+    expect(change.add).toHaveLength(1) // the Subscriptions label
+    expect(gmail.labels.some((l) => l.name === 'Subscriptions')).toBe(true)
+  })
+})
+
+describe('mail whose scan was interrupted', () => {
+  it('still runs the automatic rules for mail that an interrupted scan had already saved', async () => {
+    const provider = new HistoryProvider(60)
+    const store = new FakeStore()
+    await provider.elsewhere('demo-0', { inbox: false })
+    const service = new OrganizerService(() => provider, store as unknown as Store)
+    const sender = (await provider.getMessages(['demo-0']))[0].from.email
+    await service.overview() // the first scan
+    for (let i = 0; i < 5; i++) { await service.checkNewMail(); await new Promise((r) => setTimeout(r, 30)) } // let the follow-up looks from that scan pass
+    store.saveRule({ id: 'r', name: 'Sender', enabled: true, match: 'all', auto: true, conditions: [{ field: 'senderEmail', op: 'equals', value: sender }], actions: [{ type: 'archive' }] })
+
+    await provider.elsewhere('demo-0', { inbox: true })
+    provider.onFetch = () => service.invalidate() // something resets the view while the new mail is being downloaded: the scan stops after saving it
+    await service.checkNewMail()
+    provider.onFetch = () => {}
+    await new Promise((r) => setTimeout(r, 50))
+    expect(store.activity).toEqual([]) // the interrupted scan didn't finish, so it ran nothing
+
+    const downloadedSoFar = provider.downloaded.length
+    await service.overview() // the next scan: demo-0 is already saved, so this scan downloads nothing
+    expect(provider.downloaded).toHaveLength(downloadedSoFar)
+    await until(async () => store.activity.length > 0)
+    expect(store.activity[0].ruleName).toBe('Sender (automatic)')
+  })
+})
+
+describe('a scanned-mail rule next to an automatic cleanup', () => {
+  it('is applied in the same run, even when a cleanup for someone else acted first', async () => {
+    const gmail = new FakeGmail()
+    const friend = gmail.add('Friend <friend@mail.example>', 'Hi') // an automatic cleanup will archive this
+    gmail.add('Site Monitors <alerts@sitemonitors.example>', 'Site is down (old)')
+    const store = new FakeStore()
+    const provider = gmail.provider()
+    const service = new OrganizerService(() => provider, store as unknown as Store)
+    await service.overview()
+    for (let i = 0; i < 5; i++) { await service.checkNewMail(); await new Promise((r) => setTimeout(r, 30)) } // let the follow-up looks pass
+    // saved straight to the store, so nothing runs until new mail arrives
+    store.saveCleanupRule({ id: 'friend', name: 'Archive friend', filters: { from: 'friend@mail.example' }, actions: [{ type: 'archive' }], auto: true })
+    store.saveRule({ id: 'site', name: 'Site monitors', enabled: true, match: 'all', auto: true, conditions: [{ field: 'senderEmail', op: 'equals', value: 'alerts@sitemonitors.example' }], actions: [{ type: 'archive' }] })
+
+    const id = gmail.arrive('Site Monitors <alerts@sitemonitors.example>')
+    await service.checkNewMail()
+    await until(async () => gmail.modified.some((m) => m.ids.includes(friend))) // the cleanup acted
+    await until(async () => gmail.modified.some((m) => m.ids.includes(id))) // and so did the scanned-mail rule, in the same run
+  })
+})
+
+describe('seeing what the new-mail check is doing', () => {
+  const setupStatus = async () => {
+    const provider = new HistoryProvider(30)
+    const store = new FakeStore()
+    const service = new OrganizerService(() => provider, store as unknown as Store)
+    await service.overview()
+    return { provider, store, service }
+  }
+
+  it('records every check, including one that found nothing', async () => {
+    const { service } = await setupStatus()
+    expect(service.automation().lastCheckedAt).toBeNull()
+    await service.checkNewMail()
+    const at = service.automation().lastCheckedAt
+    expect(at).not.toBeNull()
+    expect(Number.isNaN(Date.parse(at!))).toBe(false)
+    expect(service.automation().checkError).toBeNull()
+  })
+
+  it('says why a check failed, without throwing it, and forgets it once a check works', async () => {
+    const { provider, service } = await setupStatus()
+    const listChanges = provider.listChanges.bind(provider)
+    provider.listChanges = async () => { throw new Error('Gmail API error 429: rate limited') }
+    await service.checkNewMail()
+    expect(service.automation().checkError).toContain('rate limited')
+    expect(service.automation().lastCheckedAt).not.toBeNull()
+
+    provider.listChanges = listChanges
+    await new Promise((r) => setTimeout(r, 60)) // the follow-up look at the rules finishes; checks don't overlap a run
+    await service.checkNewMail()
+    expect(service.automation().checkError).toBeNull()
+  })
+
+  it('keeps the last check when an automatic run updates the rest of the status', async () => {
+    const { service } = await setupStatus()
+    await service.checkNewMail()
+    const at = service.automation().lastCheckedAt
+    await service.runAutomatic()
+    expect(service.automation().lastCheckedAt).toBe(at)
+    expect(service.automation().lastRunAt).not.toBeNull()
   })
 })

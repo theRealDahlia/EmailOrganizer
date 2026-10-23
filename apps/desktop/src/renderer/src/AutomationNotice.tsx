@@ -16,10 +16,15 @@ export function AutomationNotice({ active, onRan }: { active: boolean; onRan?: (
 
   useEffect(() => {
     api.automation().then(setStatus, () => {})
-    return api.onAutomaticRun((s) => { setStatus(s); onRan?.() })
+    // the time of the last check moves every minute without any event, so look again now and then
+    const timer = setInterval(() => { api.automation().then(setStatus, () => {}) }, 30_000)
+    const off = api.onAutomaticRun((s) => { setStatus(s); onRan?.() })
+    return () => { clearInterval(timer); off() }
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!active || !status) return null
+
+  const time = (iso: string) => new Date(iso).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
 
   const runNow = async () => {
     setRunning(true); setError(null)
@@ -33,13 +38,17 @@ export function AutomationNotice({ active, onRan }: { active: boolean; onRan?: (
         <div>
           <b>Automatic rules are on</b>
           <div className="muted">
-            {status.lastRunAt ? `Last ran at ${new Date(status.lastRunAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}. ` : 'Runs shortly after launch. '}
-            They run about every 30 minutes while the app is open, and each run shows in Activity.
+            {status.lastCheckedAt ? `Last looked for new mail at ${time(status.lastCheckedAt)}. ` : 'Looks for new mail every minute. '}
+            {status.lastRunAt ? `Last ran at ${time(status.lastRunAt)}. ` : 'Runs shortly after launch. '}
+            They run when new mail arrives and about every 30 minutes, while the app is open, and each run shows in Activity.
           </div>
         </div>
         <button className="btn" disabled={running} onClick={runNow}>{running ? 'Running…' : 'Run now'}</button>
       </div>
       {error && <div className="error" role="alert">{error}</div>}
+      {status.checkError && (
+        <div className="notice error" role="status"><b>Couldn’t look for new mail.</b> {status.checkError} It tries again every minute.</div>
+      )}
       {status.needsReview.map((r) => (
         <div key={r.id} className="notice danger" role="status">
           <b>“{r.name}” is waiting for you.</b> It matches {r.count.toLocaleString()} messages, more than the {AUTO_TRASH_LIMIT.toLocaleString()} an automatic run will move to Trash. Preview it and apply it yourself, and automatic runs will handle new mail after that.

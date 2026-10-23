@@ -23,6 +23,13 @@ const FULL_RELIST_AFTER_MS = 6 * 24 * 3_600_000
 export const SAMPLE_SIZE = 2_000
 /** How often automatic rules and cleanups run while the app is open. */
 export const AUTO_INTERVAL_MS = 30 * 60_000
+/** How often the app looks for new mail on its own. */
+export const NEW_MAIL_INTERVAL_MS = 60_000
+/**
+ * After new mail is scanned the automatic rules run at once, then again at this many of the next checks. Gmail's history
+ * can know about a message before its search does, so a rule's search may not find mail that arrived seconds ago.
+ */
+const AUTO_RECHECKS = 2
 /** The most rules of each kind one import will read. */
 const IMPORT_LIMIT = 200
 /** A sender needs at least this much mail before it's worth a suggestion. */
@@ -110,7 +117,13 @@ export class OrganizerService {
   private sampleSize: number
   private onAutomatic: (status: AutomationStatus) => void
   private automating: Promise<AutomationStatus> | null = null
-  private auto: AutomationStatus = { lastRunAt: null, needsReview: [], errors: [], runs: 0, lastChanged: 0, lastSummary: '' }
+  private polling = false
+  /** messages the automatic rules have been given the chance to act on */
+  private automationSeen = new Set<string>()
+  private rerunRequested = false
+  /** looks at the rules still to make after new mail, for mail Gmail's search may not have caught up on yet */
+  private automaticRechecks = 0
+  private auto: AutomationStatus = { lastRunAt: null, needsReview: [], errors: [], runs: 0, lastChanged: 0, lastSummary: '', lastCheckedAt: null, checkError: null }
 
   constructor(
     private getProvider: () => MailProvider,
@@ -134,8 +147,53 @@ export class OrganizerService {
     this.cache = null
     this.failure = null
     this.counted.clear()
-    if (reset) this.full = false
+    if (reset) { this.full = false; this.automationSeen.clear() }
   }
+
+  /**
+   * Looks for mail that arrived since the last scan, without anyone asking. Cheap: Gmail's history says what changed
+   * (one request when nothing did) and only the new messages are downloaded. Quiet: it never shows an error, because a
+   * failed check (offline, rate limited) simply tries again next time, and it leaves the counts alone unless mail arrived.
+   * It never starts a first scan of a mailbox, which is slow and is left to opening the app.
+   */
+  async checkNewMail(): Promise<void> {
+    const provider = this.getProvider()
+    if (this.polling || this.scanning || this.automating || provider.accountId === 'demo') return
+    // A follow-up look at the rules, after the check below (which starts its own run if it finds new mail).
+    const recheck = this.automaticRechecks > 0
+    if (recheck) this.automaticRechecks--
+    const scannedBefore = this.cache?.provider === provider || this.stale?.provider === provider || !!this.store.loadScanState(provider.accountId)
+    if (!scannedBefore) return
+
+    this.polling = true
+    const before = this.cache?.provider === provider ? this.cache.inboxTotal : undefined
+    // Like invalidate(), but the cached counts survive, since they only change if mail arrived.
+    this.stale = this.cache ?? this.stale
+    this.cache = null
+    this.failure = null
+    let failure: string | null = null
+    try {
+      await this.current() // starts the scan, which picks up from the saved checkpoint
+      await this.activeScan?.promise
+    } catch (e) {
+      failure = e instanceof Error ? e.message : String(e) // shown beside the automatic rules, never thrown at the user
+    } finally {
+      // a scan that failed on its own leaves its error behind for the next screen load; take it as this check's failure instead
+      const left = this.lastFailure
+      if (left && !failure) failure = left instanceof Error ? left.message : String(left)
+      this.auto = { ...this.auto, lastCheckedAt: new Date().toISOString(), checkError: failure }
+      this.failure = null
+      this.polling = false
+    }
+    const after = this.finishedScan
+    if (after && before !== undefined && after.inboxTotal !== before) this.counted.clear()
+    if (recheck && !this.automating) void this.runAutomatic().catch(() => {})
+  }
+
+  // Plain reads of fields that change while a check awaits, so TypeScript doesn't assume they stayed as they were.
+  private get activeScan(): ScanEntry | null { return this.scanning }
+  private get finishedScan(): ScanData | null { return this.cache }
+  private get lastFailure(): unknown { return this.failure }
 
   /** Stop the running scan. Whatever has been scanned is kept, and the next scan resumes from there. */
   cancelScan(): void {
@@ -196,6 +254,15 @@ export class OrganizerService {
     return { messages, inboxTotal, complete, scanning: false }
   }
 
+  /** True if the view holds mail the automatic rules haven't seen; marks all of it seen. */
+  private hasUnseenMail(messages: MailMessage[]): boolean {
+    let unseen = false
+    for (const m of messages) {
+      if (!this.automationSeen.has(m.id)) { unseen = true; this.automationSeen.add(m.id) }
+    }
+    return unseen
+  }
+
   private throwFailure(): void {
     if (this.failure) {
       const e = this.failure
@@ -224,6 +291,13 @@ export class OrganizerService {
           this.cache = null
         } else {
           this.cache = data
+        }
+        // Mail that was just scanned is mail the rules haven't seen: run the automatic ones now rather than at the next half hour.
+        // Mail the automatic rules haven't looked at yet. Judged by the messages themselves, not by what this scan downloaded:
+        // a scan that was interrupted may already have saved the new mail, and the next one would find nothing left to download.
+        if (this.hasUnseenMail(data.messages) && !entry.abort.signal.aborted) {
+          this.automaticRechecks = AUTO_RECHECKS
+          void this.runAutomatic().catch(() => {})
         }
       },
       (e) => {
@@ -885,10 +959,25 @@ export class OrganizerService {
     return { ...this.auto, needsReview: [...this.auto.needsReview], errors: [...this.auto.errors] }
   }
 
-  /** Runs every automatic cleanup and rule once. Never runs two at the same time. */
+  /**
+   * Runs every automatic cleanup and rule once. Never runs two at the same time, but asking while one is running isn't
+   * ignored: the run in progress may have looked at the rules before the mail that prompted this, so one more pass
+   * follows it.
+   */
   runAutomatic(): Promise<AutomationStatus> {
-    this.automating ??= this.runAutomaticNow().finally(() => { this.automating = null })
-    return this.automating
+    if (this.automating) {
+      this.rerunRequested = true
+      return this.automating
+    }
+    const run = this.runAutomaticNow().finally(() => {
+      this.automating = null
+      if (this.rerunRequested) {
+        this.rerunRequested = false
+        void this.runAutomatic().catch(() => {})
+      }
+    })
+    this.automating = run
+    return run
   }
 
   private async runAutomaticNow(): Promise<AutomationStatus> {
@@ -920,12 +1009,15 @@ export class OrganizerService {
       }
     }
 
-    // Header-based rules work on mail that has already been scanned, so they only run when that view is ready.
+    // Header-based rules work on mail that has already been scanned, so they need that view, and no scan writing to it.
+    // A cleanup that acted a moment ago resets the live view and leaves its patched copy as the stale one, which is
+    // just as good: it has the new mail, minus whatever that cleanup removed.
     const autoRules = this.store.listRules().filter((r) => r.auto && r.enabled)
-    if (autoRules.length && !this.scanning && this.cache?.provider === provider) {
+    const viewReady = () => [this.cache, this.stale].some((v) => v?.provider === provider)
+    if (autoRules.length && !this.scanning && viewReady()) {
       for (const rule of autoRules) {
         try {
-          const messages = this.cache?.messages ?? this.stale?.messages ?? []
+          const messages = (this.cache?.provider === provider ? this.cache : this.stale)?.messages ?? []
           const count = planChanges([rule], messages).length
           if (count === 0) continue
           if (rule.actions.some((a) => a.type === 'trash') && count > AUTO_TRASH_LIMIT) {
@@ -942,7 +1034,7 @@ export class OrganizerService {
     }
 
     this.auto = {
-      lastRunAt: new Date().toISOString(), needsReview, errors, runs: this.auto.runs + (changed ? 1 : 0),
+      ...this.auto, lastRunAt: new Date().toISOString(), needsReview, errors, runs: this.auto.runs + (changed ? 1 : 0),
       lastChanged: ran.reduce((n, e) => n + e.messageCount, 0), lastSummary: describeRun(ran),
     }
     if (changed || needsReview.length || errors.length) this.onAutomatic(this.automation())

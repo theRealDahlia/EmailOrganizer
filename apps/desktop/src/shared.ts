@@ -155,6 +155,10 @@ export interface AutomationStatus {
   /** messages the last run changed, and a plain sentence about it ("Archived 212 messages and moved 30 to Trash"); empty when it changed none */
   lastChanged: number
   lastSummary: string
+  /** ISO time the app last looked for new mail on its own, even if there was none */
+  lastCheckedAt: string | null
+  /** why the last check failed (offline, rate limited, signed out), or null if it worked; checks never show errors themselves */
+  checkError: string | null
 }
 
 /** What the app keeps doing when its window is closed. All off until the user turns them on. */
