@@ -1,12 +1,12 @@
 :root {
-  --bg: #f7f7f5; --panel: #ffffff; --sidebar: #efeeea; --text: #191a1f; --muted: #6b6f7b; --line: #e6e5e0;
+  --bg: #f5f4fa; --panel: #ffffff; --sidebar: #eeecf6; --text: #191a1f; --muted: #6b6f7b; --line: #e6e5e0;
   --accent: #4f46e5; --accent-soft: #eceafd; --accent-text: #fff; --danger: #d23b2c; --danger-soft: #fdeeec; --ok: #1a8a58; --ok-soft: #e6f5ee;
   --shadow: 0 1px 2px rgba(20, 20, 30, .04), 0 1px 1px rgba(20, 20, 30, .03);
   --radius: 12px;
 }
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #111215; --panel: #1a1c21; --sidebar: #15161a; --text: #ecedf1; --muted: #9a9fab; --line: #292c33;
+    --bg: #111219; --panel: #1a1c22; --sidebar: #14141c; --text: #ecedf1; --muted: #9a9fab; --line: #292c33;
     --accent: #8b85ff; --accent-soft: #25233f; --accent-text: #0e0d1f; --danger: #ff7a6b; --danger-soft: #34201e; --ok: #4cc38a; --ok-soft: #1a2d25;
     --shadow: none;
   }
@@ -44,15 +44,18 @@ h2 { font-size: 15px; margin: 0 0 14px; font-weight: 600; }
 .shell > * { min-width: 0; }
 .main {
   overflow-y: auto; overflow-x: hidden;
-  /* Two faint glows at the top of the page; they scroll away with the content. */
+  /* Two glows at the top of the page, which scroll away with the content. */
   background:
     radial-gradient(720px 340px at 12% -8%, hsl(245 90% 68% / var(--glow)), transparent 70%),
     radial-gradient(620px 320px at 92% -12%, hsl(320 90% 70% / var(--glow)), transparent 70%),
+    /* two quieter washes that stay put while the page scrolls, so colour reaches past the header */
+    radial-gradient(900px 600px at 100% 100%, hsl(190 85% 60% / calc(var(--glow) * .55)), transparent 70%),
+    radial-gradient(800px 560px at 0% 70%, hsl(270 85% 66% / calc(var(--glow) * .45)), transparent 70%),
     var(--bg);
-  background-attachment: local;
+  background-attachment: local, local, fixed, fixed;
 }
-:root { --glow: .13; }
-@media (prefers-color-scheme: dark) { :root { --glow: .16; } }
+:root { --glow: .18; }
+@media (prefers-color-scheme: dark) { :root { --glow: .2; } }
 .card, .grid > *, .stats > * { min-width: 0; }
 .card { overflow-wrap: anywhere; }
 td { overflow-wrap: anywhere; }
@@ -396,3 +399,6 @@ table.fixed.senders th.num { width: 96px; }
 .palette li.none { color: var(--muted); cursor: default; }
 @keyframes fade { from { opacity: 0; } }
 @media (prefers-reduced-motion: reduce) { .palette-backdrop, .palette { animation: none; } }
+
+/* A faint tint down the sidebar, matching the page's glows. */
+.sidebar { background: linear-gradient(180deg, color-mix(in srgb, hsl(245 80% 65%) 7%, var(--sidebar)) 0%, var(--sidebar) 45%, color-mix(in srgb, hsl(300 70% 65%) 5%, var(--sidebar)) 100%); }
