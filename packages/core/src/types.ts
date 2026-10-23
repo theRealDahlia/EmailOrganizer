@@ -41,6 +41,16 @@ export type MailAction =
   | { type: 'markUnread' }
   | { type: 'removeLabel'; label: string }
 
+/** Where an action sends mail: out of the inbox. Everything else leaves mail where it is. */
+export type MailMove = 'trash' | 'archive'
+
+/** Whether (and where) these actions move mail. Trash wins when a rule would do both. */
+export function mailMove(actions: MailAction[]): MailMove | null {
+  if (actions.some((a) => a.type === 'trash')) return 'trash'
+  if (actions.some((a) => a.type === 'archive')) return 'archive'
+  return null
+}
+
 export interface MailPage {
   messages: MailMessage[]
   nextCursor?: string

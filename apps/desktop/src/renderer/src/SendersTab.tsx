@@ -41,7 +41,7 @@ const shortDate = (iso: string) => {
 }
 
 /** Every sender in the scanned mail with how many messages each has sent, and the same quick actions as Overview. */
-export function SendersTab({ scanKey, progress, onCancel, onScanAll, onChanged, onOpenCleanup, onGoToRules }: {
+export function SendersTab({ scanKey, progress, onCancel, onScanAll, onChanged, onOpenCleanup, onGoToCleanup }: {
   /** changes whenever the scan finds more mail, so the list reloads */
   scanKey: string
   progress: ScanProgress | null
@@ -49,7 +49,7 @@ export function SendersTab({ scanKey, progress, onCancel, onScanAll, onChanged, 
   onScanAll: () => void
   onChanged: () => void
   onOpenCleanup: (email: string, name: string) => void
-  onGoToRules: () => void
+  onGoToCleanup: () => void
 }) {
   const [data, setData] = useState<SendersResult | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -148,7 +148,7 @@ export function SendersTab({ scanKey, progress, onCancel, onScanAll, onChanged, 
                     </tr>
                     {isOpen && (
                       <tr className="detail"><td colSpan={narrow ? 3 : 4}>
-                        <SenderPanel email={s.email} name={s.name} showUnsubscribe onChanged={() => { onChanged(); load() }} onOpenCleanup={onOpenCleanup} onGoToRules={onGoToRules} />
+                        <SenderPanel email={s.email} name={s.name} showUnsubscribe onChanged={() => { onChanged(); load() }} onOpenCleanup={onOpenCleanup} onGoToCleanup={onGoToCleanup} />
                       </td></tr>
                     )}
                   </Fragment>

@@ -34,6 +34,10 @@ export interface CleanupRule {
    * Such rules also need a typed confirmation each time they run.
    */
   allowBroad?: boolean
+  /** Runs one time, without a preview step, and is removed once it has run. */
+  runOnce?: boolean
+  /** Applied on its own, every so often while the app is open, with no preview step. Never with `runOnce`. */
+  auto?: boolean
 }
 
 const UNIT_WORD = { d: 'day', m: 'month', y: 'year' } as const
@@ -119,6 +123,12 @@ export function validateCleanup(rule: CleanupRule): string[] {
       if (!a.label.trim()) problems.push('Label actions need a label name.')
       else if (SYSTEM_LABELS.has(a.label.trim().toUpperCase())) problems.push(`“${a.label}” is a built-in Gmail label; choose another name.`)
     }
+  }
+
+  if (rule.runOnce && rule.auto) problems.push('Choose either “run once” or “run automatically”, not both.')
+  // Nothing watches an automatic run, so it can't be allowed to reach everyday mail.
+  if (rule.auto && isBroadTrash(rule)) {
+    problems.push('Automatic cleanups can’t move everyday mail to Trash. Add a sender, subject, Promotions/Social/Updates/Forums tab, or a size of 5 MB or more.')
   }
 
   // Moving mail to Trash by age or read state alone can reach everyday mail, so it must be chosen knowingly.

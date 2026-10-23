@@ -17,11 +17,14 @@ const paths: Record<string, ReactNode> = {
   chevron: <><path d="m6 9 6 6 6-6" /></>,
   undo: <><path d="M9 14 4 9l5-5" /><path d="M4 9h10a6 6 0 0 1 0 12h-3" /></>,
   bell: <><path d="M6 17V11a6 6 0 0 1 12 0v6l2 2H4z" /><path d="M10 21h4" /></>,
+  sun: <><circle cx="12" cy="12" r="4" /><path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6l1.4 1.4M17 17l1.4 1.4M5.6 18.4 7 17M17 7l1.4-1.4" /></>,
+  moon: <><path d="M20 14.5A8 8 0 0 1 9.5 4 8 8 0 1 0 20 14.5z" /></>,
+  monitor: <><rect x="3" y="4" width="18" height="12" rx="2" /><path d="M8 20h8M12 16v4" /></>,
   archive: <><rect x="3" y="4" width="18" height="5" rx="1.5" /><path d="M5 9v10a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V9" /><path d="M10 13h4" /></>,
 }
 
 /** One hue per page, used for its sidebar icon. */
-export const PAGE_HUE: Record<string, number> = { overview: 245, senders: 215, cleanup: 12, subscriptions: 330, rules: 270, activity: 155, accounts: 200 }
+export const PAGE_HUE: Record<string, number> = { overview: 245, senders: 215, cleanup: 12, subscriptions: 330, activity: 155, accounts: 200 }
 
 const CATEGORY_HUE: Record<string, number> = { personal: 245, newsletter: 270, promotion: 330, social: 200, receipt: 155, finance: 175, travel: 35 }
 export const categoryHue = (name: string) => CATEGORY_HUE[name.toLowerCase()] ?? [...name].reduce((h, c) => (h * 31 + c.charCodeAt(0)) % 360, 0)

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { parseListUnsubscribe, type Subscription } from '@organizer/core'
 import type { OverviewResult } from '../../shared'
 import { CoverageNote } from './ScanStatus'
@@ -7,8 +7,8 @@ import { SenderPanel } from './SenderPanel'
 
 const api = window.organizer
 
-export function SubscriptionsTab({ scan, onGoToRules, onChanged, onOpenCleanup }: {
-  scan: OverviewResult | null; onGoToRules: () => void; onChanged: () => void; onOpenCleanup: (email: string, name: string) => void
+export function SubscriptionsTab({ scan, onGoToCleanup, onChanged, onOpenCleanup }: {
+  scan: OverviewResult | null; onGoToCleanup: () => void; onChanged: () => void; onOpenCleanup: (email: string, name: string) => void
 }) {
   const [openSender, setOpenSender] = useState<string | null>(null)
   const [subs, setSubs] = useState<Subscription[] | null>(null)
@@ -16,6 +16,7 @@ export function SubscriptionsTab({ scan, onGoToRules, onChanged, onOpenCleanup }
   const [confirming, setConfirming] = useState<string | null>(null)
   const [done, setDone] = useState<Record<string, string>>({})
   const [busy, setBusy] = useState<string | null>(null)
+  const [query, setQuery] = useState('')
 
   const load = () => {
     setError(null)
@@ -30,6 +31,11 @@ export function SubscriptionsTab({ scan, onGoToRules, onChanged, onOpenCleanup }
     finally { setBusy(null) }
   }
 
+  const matches = useMemo(() => {
+    const q = query.trim().toLowerCase()
+    return (subs ?? []).filter((s) => !q || s.email.includes(q) || s.name.toLowerCase().includes(q))
+  }, [subs, query])
+
   if (error && !subs) return <div className="notice"><p className="error">{error}</p><button className="btn" onClick={load}>Try again</button></div>
   if (!subs) return <p className="muted">Looking for subscriptions…</p>
 
@@ -41,7 +47,25 @@ export function SubscriptionsTab({ scan, onGoToRules, onChanged, onOpenCleanup }
         {scan && <CoverageNote scan={scan} />}
         <p className="muted">Senders whose mail includes an unsubscribe option, from the messages scanned. Sorted by volume; a low read rate suggests you don't want them.</p>
         {subs.length === 0 && <p>No subscriptions found in the scanned messages.</p>}
-        {subs.map((s) => {
+        {subs.length > 0 && (
+          <div className="filters">
+            <label className="filter-search">
+              <span>Find a subscription</span>
+              <input type="search" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Name or address" spellCheck={false} autoComplete="off" />
+            </label>
+            <p className="card-sub tally" style={{ margin: '0 0 8px' }} aria-live="polite">
+              <b>{matches.length.toLocaleString()}</b> {matches.length === 1 ? 'subscription' : 'subscriptions'}{query.trim() ? ` of ${subs.length.toLocaleString()}` : ''}
+            </p>
+          </div>
+        )}
+        {subs.length > 0 && matches.length === 0 && (
+          <div className="empty">
+            <b>No subscriptions match “{query.trim()}”</b>
+            <span className="muted">Check the spelling, or try part of the sender’s address.</span>
+            <button className="btn" onClick={() => setQuery('')}>Clear search</button>
+          </div>
+        )}
+        {matches.map((s) => {
           const t = parseListUnsubscribe(s.listUnsubscribe)
           return (
             <div className={`row${openSender === s.email ? ' open' : ''}`} key={s.email}>
@@ -70,15 +94,15 @@ export function SubscriptionsTab({ scan, onGoToRules, onChanged, onOpenCleanup }
                 {!t.https && t.mailto && (
                   <button className="btn" disabled={!!busy} onClick={() => act(s.email, async () => { await api.unsubscribe(s.email, 'openMail'); return 'Opened a pre-filled email in your mail app. Send it to unsubscribe.' })}>Unsubscribe by email</button>
                 )}
-                <button className="btn" disabled={!!busy} onClick={() => act(s.email, async () => { await api.createArchiveRule(s.email); return 'Rule created. Review and apply it in Rules.' })}>Auto-archive</button>
+                <button className="btn" disabled={!!busy} onClick={() => act(s.email, async () => { await api.createArchiveRule(s.email); return 'Rule created. Review and apply it in Cleanup.' })}>Auto-archive</button>
               </div>
-              {openSender === s.email && <SenderPanel email={s.email} name={s.name} onChanged={onChanged} onOpenCleanup={onOpenCleanup} onGoToRules={onGoToRules} />}
+              {openSender === s.email && <SenderPanel email={s.email} name={s.name} onChanged={onChanged} onOpenCleanup={onOpenCleanup} onGoToCleanup={onGoToCleanup} />}
             </div>
           )
         })}
       </section>
       {Object.keys(done).some((k) => done[k].startsWith('Rule created')) && (
-        <div className="actions" style={{ marginTop: 12 }}><button className="btn primary" onClick={onGoToRules}>Go to Rules</button></div>
+        <div className="actions" style={{ marginTop: 12 }}><button className="btn primary" onClick={onGoToCleanup}>Go to Cleanup</button></div>
       )}
     </>
   )

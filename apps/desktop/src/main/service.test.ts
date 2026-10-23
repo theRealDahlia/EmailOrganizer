@@ -683,3 +683,146 @@ describe('senders list', () => {
     expect(after.senders.find((s) => s.email === 'deals@shopmart.example')).toBeUndefined()
   })
 })
+
+describe('run once cleanups', () => {
+  const setupOnce = () => {
+    const provider = new CountingProvider(300)
+    const store = new FakeStore()
+    const service = new OrganizerService(() => provider, store as unknown as Store)
+    const rule: CleanupRule = { id: 'once', name: 'Drop ShopMart deals', filters: { from: 'deals@shopmart.example' }, actions: [{ type: 'trash' }], runOnce: true }
+    store.saveCleanupRule(rule)
+    return { provider, store, service, rule }
+  }
+
+  it('counts the matches without a preview or any download', async () => {
+    const { service, provider } = setupOnce()
+    const { count } = await service.cleanupCount('once')
+    expect(count).toBe((await service.previewCleanup('once')).count)
+    expect(count).toBeGreaterThan(0)
+    provider.downloaded = []
+    await service.cleanupCount('once')
+    expect(provider.downloaded).toEqual([])
+  })
+
+  it('moves the mail to Trash, then removes the cleanup', async () => {
+    const { service, provider, store } = setupOnce()
+    const { count } = await service.cleanupCount('once')
+    const entry = await service.applyCleanup('once', count)
+    expect(entry).toMatchObject({ messageCount: count, ruleRemoved: true })
+    expect(store.cleanup).toEqual([])
+    expect((await provider.listInboxIds(false)).length).toBe(300 - count)
+    expect((await provider.searchInbox!('in:inbox from:(deals@shopmart.example)')).length).toBe(0)
+
+    await service.undo(entry.id as number) // the mail comes back, but the cleanup stays gone
+    expect((await provider.listInboxIds(false)).length).toBe(300)
+    expect(store.cleanup).toEqual([])
+  })
+
+  it('keeps the cleanup when the run fails, so it can be tried again', async () => {
+    const { service, provider, store } = setupOnce()
+    const { count } = await service.cleanupCount('once')
+    provider.applyActions = async () => { throw new Error('offline') }
+    await expect(service.applyCleanup('once', count)).rejects.toThrow('offline')
+    expect(store.cleanup.map((r) => r.id)).toEqual(['once'])
+  })
+
+  it('leaves an ordinary cleanup in place after it runs', async () => {
+    const { service, store, rule } = setupOnce()
+    store.saveCleanupRule({ ...rule, runOnce: false })
+    const { count } = await service.cleanupCount('once')
+    expect(await service.applyCleanup('once', count)).not.toHaveProperty('ruleRemoved')
+    expect(store.cleanup).toHaveLength(1)
+  })
+})
+
+describe('automatic rules and cleanups', () => {
+  const setupAuto = (count = 300) => {
+    const provider = new CountingProvider(count)
+    const store = new FakeStore()
+    const notices: unknown[] = []
+    const service = new OrganizerService(() => provider, store as unknown as Store, () => {}, { onAutomatic: (s) => notices.push(s) })
+    return { provider, store, service, notices }
+  }
+  const cleanup = (over: Partial<CleanupRule> = {}): CleanupRule =>
+    ({ id: 'a', name: 'Auto ShopMart', filters: { from: 'deals@shopmart.example' }, actions: [{ type: 'trash' }], auto: true, ...over })
+
+  it('applies an automatic cleanup on its own, labels the activity, and has nothing left to do next time', async () => {
+    const { service, provider, store, notices } = setupAuto()
+    store.saveCleanupRule(cleanup())
+    const before = (await provider.searchInbox!('in:inbox from:(deals@shopmart.example)')).length
+    expect(before).toBeGreaterThan(0)
+
+    const status = await service.runAutomatic()
+    expect(status).toMatchObject({ runs: 1, needsReview: [], errors: [] })
+    expect(store.activity.map((a) => [a.ruleName, a.messageCount])).toEqual([['Auto ShopMart (automatic)', before]])
+    expect((await provider.searchInbox!('in:inbox from:(deals@shopmart.example)')).length).toBe(0)
+    expect(store.cleanup).toHaveLength(1) // an automatic cleanup stays
+    expect(notices).toHaveLength(1)
+
+    await service.runAutomatic()
+    expect(store.activity).toHaveLength(1)
+    expect(notices).toHaveLength(1) // a run that changes nothing says nothing
+  })
+
+  it('starts working as soon as an automatic cleanup is saved', async () => {
+    const { service, store } = setupAuto()
+    service.saveCleanupRule(cleanup())
+    await service.runAutomatic() // joins the run that saving started
+    expect(store.activity).toHaveLength(1)
+  })
+
+  it('leaves a manual cleanup alone', async () => {
+    const { service, store } = setupAuto()
+    store.saveCleanupRule(cleanup({ auto: false }))
+    await service.runAutomatic()
+    expect(store.activity).toEqual([])
+  })
+
+  it('will not trash more than the automatic limit, and asks for a review instead', async () => {
+    const { service, provider, store } = setupAuto(2_500)
+    store.saveCleanupRule(cleanup({ filters: { from: '@' } })) // narrow enough to save, but matches everything
+    const status = await service.runAutomatic()
+    expect(status.needsReview).toEqual([{ id: 'a', name: 'Auto ShopMart', count: 2_500, kind: 'cleanup' }])
+    expect(store.activity).toEqual([])
+    expect((await provider.listInboxIds(false)).length).toBe(2_500)
+
+    store.saveCleanupRule(cleanup({ filters: { from: '@' }, actions: [{ type: 'archive' }] })) // archiving isn't limited
+    expect((await service.runAutomatic()).needsReview).toEqual([])
+    expect((await provider.listInboxIds(false)).length).toBe(0)
+  })
+
+  it('reports a rule it cannot run and carries on with the others', async () => {
+    const { service, store } = setupAuto()
+    store.saveCleanupRule(cleanup({ id: 'bad', name: 'Broken', filters: {}, auto: true }))
+    store.saveCleanupRule(cleanup())
+    const status = await service.runAutomatic()
+    expect(status.errors).toEqual([{ name: 'Broken', message: expect.stringContaining('filter'), kind: 'cleanup' }])
+    expect(store.activity).toHaveLength(1)
+  })
+
+  it('applies automatic header-based rules to scanned mail, several in one run', async () => {
+    const { service, store, provider } = setupAuto()
+    await service.overview() // the scan the rules work on
+    store.saveRule({ id: 'r1', name: 'Archive daily digest', enabled: true, match: 'all', auto: true,
+      conditions: [{ field: 'senderEmail', op: 'equals', value: 'news@dailydigest.example' }], actions: [{ type: 'archive' }] })
+    store.saveRule({ id: 'r2', name: 'Read LinkedIn', enabled: true, match: 'all', auto: true,
+      conditions: [{ field: 'senderDomain', op: 'equals', value: 'linkedin.com' }], actions: [{ type: 'markRead' }] })
+    store.saveRule({ id: 'r3', name: 'Not automatic', enabled: true, match: 'all',
+      conditions: [{ field: 'senderEmail', op: 'equals', value: 'mom@family.example' }], actions: [{ type: 'archive' }] })
+
+    const status = await service.runAutomatic()
+    expect(status.errors).toEqual([])
+    expect(store.activity.map((a) => a.ruleName).sort()).toEqual(['Archive daily digest (automatic)', 'Read LinkedIn (automatic)'])
+    expect((await provider.searchInbox!('in:inbox from:(news@dailydigest.example)')).length).toBe(0)
+    expect((await provider.searchInbox!('in:inbox from:(mom@family.example)')).length).toBeGreaterThan(0)
+  })
+
+  it('never runs two automatic runs at once', async () => {
+    const { service, store } = setupAuto()
+    store.saveCleanupRule(cleanup())
+    const [a, b] = [service.runAutomatic(), service.runAutomatic()]
+    expect(a).toBe(b)
+    await a
+    expect(store.activity).toHaveLength(1)
+  })
+})

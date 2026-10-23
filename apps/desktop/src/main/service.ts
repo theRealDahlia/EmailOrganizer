@@ -2,7 +2,8 @@ import {
   StorageScopeError, applyActionsToMessage, buildOverview, buildQuery, buildSenders, isBroadTrash, reverseCleanupActions, validateCleanup, buildSubscriptions, categorize, inverseActions, parseListUnsubscribe, planChanges, validateRule,
   type CleanupFilters, type CleanupRule, type InboxCounts, type MailAction, type MailMessage, type MailProvider, type Rule, type Subscription, type UnsubscribeTargets,
 } from '@organizer/core'
-import type { ActivityEntry, CleanupPreview, OverviewResult, PreviewResult, ScanProgress, SenderAction, SenderSummary, SendersResult, StorageResult } from '../shared'
+import { AUTO_TRASH_LIMIT } from '../shared'
+import type { ActivityEntry, CleanupPreview, OverviewResult, PreviewResult, AutomationStatus, ScanProgress, SenderAction, SenderSummary, SendersResult, StorageResult } from '../shared'
 import type { Store, UndoStep } from './db'
 
 /** New messages are downloaded and saved in chunks of this size, so progress survives a stop or crash. */
@@ -18,6 +19,9 @@ const FULL_RELIST_AFTER_MS = 6 * 24 * 3_600_000
  * Inbox totals and per-tab counts come straight from Gmail and never need a scan.
  */
 export const SAMPLE_SIZE = 2_000
+/** How often automatic rules and cleanups run while the app is open. */
+export const AUTO_INTERVAL_MS = 30 * 60_000
+
 
 interface ScanData {
   provider: MailProvider
@@ -69,14 +73,18 @@ export class OrganizerService {
   /** Inbox-wide counts from the mail service, kept until mail changes. */
   private counted = new Map<string, { provider: MailProvider; promise: Promise<unknown> }>()
   private sampleSize: number
+  private onAutomatic: (status: AutomationStatus) => void
+  private automating: Promise<AutomationStatus> | null = null
+  private auto: AutomationStatus = { lastRunAt: null, needsReview: [], errors: [], runs: 0 }
 
   constructor(
     private getProvider: () => MailProvider,
     private store: Store,
     private onProgress: (p: ScanProgress) => void = () => {},
-    options: { sampleSize?: number } = {},
+    options: { sampleSize?: number; onAutomatic?: (status: AutomationStatus) => void } = {},
   ) {
     this.sampleSize = options.sampleSize ?? SAMPLE_SIZE
+    this.onAutomatic = options.onAutomatic ?? (() => {})
     if (store.listRules().length === 0) DEFAULT_RULES.forEach((r) => store.saveRule(r))
   }
 
@@ -371,6 +379,7 @@ export class OrganizerService {
     const problems = validateRule(rule)
     if (problems.length) throw new Error(problems.join(' '))
     this.store.saveRule(rule)
+    if (rule.auto && rule.enabled) void this.runAutomatic() // an automatic rule starts working straight away
   }
 
   async subscriptions(): Promise<Subscription[]> {
@@ -448,6 +457,7 @@ export class OrganizerService {
     const problems = validateCleanup(rule)
     if (problems.length) throw new Error(problems.join(' '))
     this.store.saveCleanupRule(rule)
+    if (rule.auto) void this.runAutomatic()
   }
 
   deleteCleanupRule(id: string): void {
@@ -487,7 +497,16 @@ export class OrganizerService {
   /** `confirmation` must be the word TRASH for a rule that could reach everyday mail; checked here, not just on screen. */
   async applyCleanup(ruleId: string, expectedCount: number, confirmation?: string): Promise<ActivityEntry> {
     const { rule, provider, query } = this.cleanupSetup(ruleId)
-    return this.runCleanup(rule, provider, query, expectedCount, confirmation)
+    const entry = await this.runCleanup(rule, provider, query, expectedCount, confirmation)
+    if (!rule.runOnce) return entry
+    this.store.deleteCleanupRule(rule.id) // it has done its one job
+    return { ...entry, ruleRemoved: true }
+  }
+
+  /** How many messages a cleanup matches right now (a Gmail search, 5 units per 500 matches; nothing is downloaded). */
+  async cleanupCount(ruleId: string): Promise<{ count: number; query: string }> {
+    const { provider, query } = this.cleanupSetup(ruleId)
+    return { count: (await provider.searchInbox!(query)).length, query }
   }
 
   private async runCleanup(rule: CleanupRule, provider: MailProvider, query: string, expectedCount: number, confirmation?: string): Promise<ActivityEntry> {
@@ -558,7 +577,13 @@ export class OrganizerService {
     const rule = this.requireRule(ruleId)
     const v = await this.current()
     if (v.scanning) this.requireNoScan()
-    const messages = v.messages
+    const entry = await this.applyRule(rule, v.messages, rule.name)
+    this.invalidate() // the next scan reconciles with Gmail; the patched view shows meanwhile
+    return entry
+  }
+
+  /** Applies one rule to the given messages and records it. The caller decides when to rescan. */
+  private async applyRule(rule: Rule, messages: MailMessage[], activityName: string): Promise<ActivityEntry> {
     const byId = new Map(messages.map((m) => [m.id, m]))
     const changes = planChanges([rule], messages)
 
@@ -584,8 +609,70 @@ export class OrganizerService {
     await provider.applyActions(ids, rule.actions)
     this.updateCached(provider.accountId, ids, rule.actions)
     this.patchViews(ids, rule.actions)
-    this.invalidate() // the next scan reconciles with Gmail; the patched view shows meanwhile
-    return this.store.addActivity(rule.name, changes.length, undo)
+    return this.store.addActivity(activityName, changes.length, undo)
+  }
+
+  // --- Automatic rules and cleanups: applied on their own, with limits, because nobody is there to preview them ---
+
+  automation(): AutomationStatus {
+    return { ...this.auto, needsReview: [...this.auto.needsReview], errors: [...this.auto.errors] }
+  }
+
+  /** Runs every automatic cleanup and rule once. Never runs two at the same time. */
+  runAutomatic(): Promise<AutomationStatus> {
+    this.automating ??= this.runAutomaticNow().finally(() => { this.automating = null })
+    return this.automating
+  }
+
+  private async runAutomaticNow(): Promise<AutomationStatus> {
+    const needsReview: AutomationStatus['needsReview'] = []
+    const errors: AutomationStatus['errors'] = []
+    let changed = 0
+    const provider = this.getProvider()
+
+    for (const rule of this.store.listCleanupRules().filter((r) => r.auto && !r.runOnce)) {
+      try {
+        if (!provider.searchInbox) continue
+        const problems = validateCleanup(rule)
+        if (problems.length) { errors.push({ name: rule.name, message: problems[0], kind: 'cleanup' }); continue }
+        const query = buildQuery(rule.filters, rule.actions)
+        const count = (await provider.searchInbox(query)).length
+        if (count === 0) continue
+        if (rule.actions.some((a) => a.type === 'trash') && count > AUTO_TRASH_LIMIT) {
+          needsReview.push({ id: rule.id, name: rule.name, count, kind: 'cleanup' })
+          continue
+        }
+        await this.runCleanup({ ...rule, name: `${rule.name} (automatic)` }, provider, query, count)
+        changed++
+      } catch (e) {
+        errors.push({ name: rule.name, message: e instanceof Error ? e.message : String(e), kind: 'cleanup' })
+      }
+    }
+
+    // Header-based rules work on mail that has already been scanned, so they only run when that view is ready.
+    const autoRules = this.store.listRules().filter((r) => r.auto && r.enabled)
+    if (autoRules.length && !this.scanning && this.cache?.provider === provider) {
+      for (const rule of autoRules) {
+        try {
+          const messages = this.cache?.messages ?? this.stale?.messages ?? []
+          const count = planChanges([rule], messages).length
+          if (count === 0) continue
+          if (rule.actions.some((a) => a.type === 'trash') && count > AUTO_TRASH_LIMIT) {
+            needsReview.push({ id: rule.id, name: rule.name, count, kind: 'rule' })
+            continue
+          }
+          await this.applyRule(rule, messages, `${rule.name} (automatic)`)
+          changed++
+        } catch (e) {
+          errors.push({ name: rule.name, message: e instanceof Error ? e.message : String(e), kind: 'rule' })
+        }
+      }
+      if (changed) this.mailChanged()
+    }
+
+    this.auto = { lastRunAt: new Date().toISOString(), needsReview, errors, runs: this.auto.runs + (changed ? 1 : 0) }
+    if (changed || needsReview.length || errors.length) this.onAutomatic(this.automation())
+    return this.automation()
   }
 
   async undo(activityId: number): Promise<void> {

@@ -3,11 +3,23 @@ import {
   CLEANUP_PRESETS, GMAIL_TABS, buildQuery, describeFilters, isBroadTrash, validateCleanup,
   type CleanupFilters, type CleanupRule, type MailAction,
 } from '@organizer/core'
-import type { CleanupPreview } from '../../shared'
+import { AUTO_TRASH_LIMIT, type CleanupPreview } from '../../shared'
+import { AutomationNotice } from './AutomationNotice'
+import { MoveChip, MoveChips } from './Badges'
 import { formatBytes } from './format'
 import { Icon, hue } from './Icons'
+import { RuleEditor } from './RuleEditor'
+import { TypeToggle, type TypeToggleProps } from './TypeToggle'
+import { ScannedPreview, ScannedRuleRow, useScannedRules } from './ScannedRules'
 
 const IDEA_HUES = [330, 200, 12, 155]
+
+type RunMode = 'review' | 'once' | 'auto'
+const RUN_MODES: { value: RunMode; icon: string; hue: number; title: string; blurb: string }[] = [
+  { value: 'review', icon: 'check', hue: 245, title: 'Review first', blurb: 'Save it, then preview what it would do and apply it yourself.' },
+  { value: 'once', icon: 'undo', hue: 28, title: 'Run once, then remove', blurb: 'Runs as soon as you save, with no preview, then deletes itself.' },
+  { value: 'auto', icon: 'clock', hue: 155, title: 'Run automatically', blurb: 'Keeps applying itself to new mail, with no preview.' },
+]
 
 const api = window.organizer
 const errorText = (e: unknown) => (e instanceof Error ? e.message.replace(/^Error invoking remote method '[^']+': (Error: )?/, '') : String(e))
@@ -18,7 +30,7 @@ function describeActions(actions: MailAction[]): string {
   return actions.map((a) => (a.type === 'addLabel' ? `label “${a.label}”` : a.type === 'trash' ? 'move to Trash' : a.type === 'markRead' ? 'mark read' : a.type)).join(', ')
 }
 
-function Editor({ initial, onSave, onCancel }: { initial: CleanupRule; onSave: (r: CleanupRule) => Promise<void>; onCancel: () => void }) {
+function Editor({ initial, onSave, onCancel, typeToggle }: { initial: CleanupRule; onSave: (r: CleanupRule) => Promise<void>; onCancel: () => void; typeToggle?: TypeToggleProps }) {
   const [name, setName] = useState(initial.name)
   const [f, setF] = useState<CleanupFilters>(initial.filters)
   const hasAction = (t: MailAction['type']) => initial.actions.some((a) => a.type === t)
@@ -28,6 +40,8 @@ function Editor({ initial, onSave, onCancel }: { initial: CleanupRule; onSave: (
   const [trash, setTrash] = useState(hasAction('trash'))
   const [markRead, setMarkRead] = useState(hasAction('markRead'))
   const [allowBroad, setAllowBroad] = useState(!!initial.allowBroad)
+  const [mode, setMode] = useState<RunMode>(initial.runOnce ? 'once' : initial.auto ? 'auto' : 'review')
+  const [autoTrashOk, setAutoTrashOk] = useState(!!initial.auto) // an existing automatic rule was already agreed to
   const [problems, setProblems] = useState<string[]>([])
   const [saving, setSaving] = useState(false)
 
@@ -36,7 +50,10 @@ function Editor({ initial, onSave, onCancel }: { initial: CleanupRule; onSave: (
   if (trash) actions.push({ type: 'trash' })
   else if (archive) actions.push({ type: 'archive' })
   if (markRead) actions.push({ type: 'markRead' })
-  const rule: CleanupRule = { id: initial.id, name: name.trim(), filters: f, actions, ...(allowBroad && { allowBroad: true }) }
+  const rule: CleanupRule = {
+    id: initial.id, name: name.trim(), filters: f, actions,
+    ...(allowBroad && { allowBroad: true }), ...(mode === 'once' && { runOnce: true }), ...(mode === 'auto' && { auto: true }),
+  }
   const broad = isBroadTrash({ filters: f, actions })
 
   const set = <K extends keyof CleanupFilters>(key: K, value: CleanupFilters[K] | '' | undefined) =>
@@ -50,6 +67,7 @@ function Editor({ initial, onSave, onCancel }: { initial: CleanupRule; onSave: (
 
   const save = async () => {
     const found = validateCleanup(rule)
+    if (mode === 'auto' && trash && !autoTrashOk) found.push('Tick the box to confirm that matching mail may be moved to Trash automatically.')
     setProblems(found)
     if (found.length) return
     setSaving(true)
@@ -59,6 +77,7 @@ function Editor({ initial, onSave, onCancel }: { initial: CleanupRule; onSave: (
   return (
     <section className="card" style={{ marginBottom: 16 }}>
       <h2>Cleanup rule</h2>
+      {typeToggle && <TypeToggle toggle={typeToggle} name={name} />}
       <div className="form" style={{ maxWidth: 640 }}>
         <label>Name<input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Old promotions" /></label>
 
@@ -106,11 +125,35 @@ function Editor({ initial, onSave, onCancel }: { initial: CleanupRule; onSave: (
 
         <div>
           <div className="muted" style={{ marginBottom: 6 }}>Then:</div>
-          <label className="inline"><input type="checkbox" checked={trash} onChange={(e) => setTrash(e.target.checked)} /> <span><b>Move to Trash</b> <span className="muted">frees space. Gmail keeps Trash 30 days, so you can undo.</span></span></label>
-          <label className="inline"><input type="checkbox" checked={archive && !trash} disabled={trash} onChange={(e) => setArchive(e.target.checked)} /> Archive (remove from inbox)</label>
+          <label className="inline"><input type="checkbox" checked={trash} onChange={(e) => setTrash(e.target.checked)} /> <span><b>Move to Trash</b> <MoveChip move="trash" /> <span className="muted">frees space. Gmail keeps Trash 30 days, so you can undo.</span></span></label>
+          <label className="inline"><input type="checkbox" checked={archive && !trash} disabled={trash} onChange={(e) => setArchive(e.target.checked)} /> <span>Archive (remove from inbox) <MoveChip move="archive" /></span></label>
           <label className="inline"><input type="checkbox" checked={markRead} onChange={(e) => setMarkRead(e.target.checked)} /> Mark as read</label>
           <label className="inline">Add label <input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="(optional)" /></label>
         </div>
+
+        <fieldset className="modes">
+          <legend className="muted">How should it run?</legend>
+          {RUN_MODES.map((m) => (
+            <label key={m.value} className={`mode${mode === m.value ? ' on' : ''}`} style={hue(m.hue)}>
+              <input type="radio" name="run-mode" value={m.value} checked={mode === m.value} onChange={() => setMode(m.value)} />
+              <span className="tile soft"><Icon name={m.icon} size={16} /></span>
+              <span className="mode-text"><b>{m.title}</b><span className="muted">{m.blurb}</span></span>
+            </label>
+          ))}
+        </fieldset>
+        {mode === 'once' && trash && <div className="muted">Because this moves mail to Trash, you’ll see how many messages it found and confirm before anything moves.</div>}
+        {mode === 'auto' && (
+          <div className={`notice${trash ? ' danger' : ''}`}>
+            Runs a few seconds after you save, then about every 30 minutes while the app is open. Nothing is previewed, so every run appears in Activity and can be undone.
+            {trash && <> It moves at most {AUTO_TRASH_LIMIT.toLocaleString()} messages to Trash per run, and leaves bigger matches for you to review.</>}
+            {trash && (
+              <label className="inline" style={{ marginTop: 8 }}>
+                <input type="checkbox" checked={autoTrashOk} onChange={(e) => setAutoTrashOk(e.target.checked)} />
+                <span><b>Move matching mail to Trash automatically.</b> I understand nothing asks me first.</span>
+              </label>
+            )}
+          </div>
+        )}
 
         {broad && (
           <div className="notice danger">
@@ -124,7 +167,7 @@ function Editor({ initial, onSave, onCancel }: { initial: CleanupRule; onSave: (
         <div className="muted">Gmail search: <code>{buildQuery(f, actions)}</code></div>
         {problems.length > 0 && <div className="error">{problems.map((p) => <div key={p}>{p}</div>)}</div>}
         <div className="actions">
-          <button className="btn primary" disabled={saving} onClick={save}>Save rule</button>
+          <button className="btn primary" disabled={saving} onClick={save}>{mode === 'once' ? 'Save and run once' : mode === 'auto' ? 'Save and turn on' : 'Save rule'}</button>
           <button className="btn" onClick={onCancel}>Cancel</button>
         </div>
       </div>
@@ -135,7 +178,8 @@ function Editor({ initial, onSave, onCancel }: { initial: CleanupRule; onSave: (
 /** A starting point for the editor, such as the filters for one sender. */
 export interface CleanupPrefill { name: string; filters: CleanupFilters; actions: MailAction[] }
 
-export function CleanupTab({ onApplied, prefill, onPrefillUsed }: { onApplied: () => void; prefill?: CleanupPrefill | null; onPrefillUsed?: () => void }) {
+export function CleanupTab({ onApplied, scanning, prefill, onPrefillUsed }: { onApplied: () => void; scanning: boolean; prefill?: CleanupPrefill | null; onPrefillUsed?: () => void }) {
+  const scanned = useScannedRules(onApplied)
   const [rules, setRules] = useState<CleanupRule[]>([])
   const [editing, setEditing] = useState<CleanupRule | null>(null)
   const [preview, setPreview] = useState<{ rule: CleanupRule; result: CleanupPreview } | null>(null)
@@ -143,7 +187,19 @@ export function CleanupTab({ onApplied, prefill, onPrefillUsed }: { onApplied: (
   const [error, setError] = useState<string | null>(null)
   const [done, setDone] = useState<string | null>(null)
   const [typed, setTyped] = useState('')
+  // A run-once cleanup that is waiting for the user to confirm moving mail to Trash.
+  const [once, setOnce] = useState<{ rule: CleanupRule; count: number } | null>(null)
 
+  const anyEditing = !!editing || !!scanned.editing
+  // What was typed in the rule name, carried across when a new rule switches between the two forms.
+  const [carriedName, setCarriedName] = useState('')
+  const blankNew = (r: CleanupRule) => !rules.some((x) => x.id === r.id) && Object.keys(r.filters).length === 0 && r.actions.length === 0
+  const newBlankRule = (name = ''): CleanupRule => ({ id: crypto.randomUUID(), name, filters: {}, actions: [] })
+  /** The "use scanned mail" box: swap a blank new rule between the Gmail-search form and the sort-by-type form. */
+  const switchForm = (byType: boolean, name: string) => {
+    setCarriedName(name)
+    if (byType) { setEditing(null); scanned.setEditing('new') } else { scanned.setEditing(null); setEditing(newBlankRule(name)) }
+  }
   const load = () => api.cleanupRules().then(setRules)
   useEffect(() => { load() }, [])
   useEffect(() => {
@@ -158,47 +214,135 @@ export function CleanupTab({ onApplied, prefill, onPrefillUsed }: { onApplied: (
     try { await fn() } catch (e) { setError(errorText(e)) } finally { setBusy(null) }
   }
 
+  /** Run a "run once" cleanup now, with no preview: count the matches, confirm only if it trashes, run, remove. */
+  const startOnce = (rule: CleanupRule) => run(`once-${rule.id}`, async () => {
+    setDone(null); setTyped(''); setPreview(null)
+    const { count } = await api.cleanupCount(rule.id)
+    if (count === 0) {
+      await api.deleteCleanupRule(rule.id); await load()
+      setDone('Nothing matched, so nothing was moved. The cleanup was removed.')
+      return
+    }
+    if (trashes(rule)) { setOnce({ rule, count }); return } // moving to Trash always asks, with the count
+    await finishOnce(rule, count)
+  })
+
+  const finishOnce = async (rule: CleanupRule, count: number, confirmation?: string) => {
+    const entry = await api.applyCleanup(rule.id, count, confirmation)
+    setOnce(null); await load()
+    setDone(`Done: ${entry.messageCount.toLocaleString()} messages ${trashes(rule) ? 'moved to Trash' : 'changed'}. The cleanup was removed. You can undo it from the Activity tab.`)
+    onApplied()
+  }
+
+  /** Turn a cleanup's automatic runs on or off; turning them on for Trash needs a yes. */
+  const toggleAuto = (rule: CleanupRule) => run(`auto-${rule.id}`, async () => {
+    const next: CleanupRule = { ...rule, auto: !rule.auto }
+    if (!next.auto) delete next.auto
+    else {
+      const problems = validateCleanup(next)
+      if (problems.length) throw new Error(problems[0])
+      if (trashes(next) && !window.confirm(`Turn on automatic runs for “${rule.name}”?\n\nMail that matches will be moved to Trash about every 30 minutes without asking, up to ${AUTO_TRASH_LIMIT.toLocaleString()} messages a run. Every run appears in Activity and can be undone.`)) return
+    }
+    await api.saveCleanupRule(next); await load()
+  })
+
   return (
     <>
       <p className="muted" style={{ marginTop: 0 }}>
-        Cleanup rules ask Gmail to find the mail, so they work on your whole inbox right away. No scan is needed, and nothing is downloaded except a small sample for the preview.
+        Rules ask Gmail to find the mail, so they cover your whole inbox right away. There’s no scan, and the only thing downloaded is a small sample for the preview. Rules tagged “Scanned mail” work differently: they sort mail by type, like receipts or travel, so they only see what the app has already downloaded.
       </p>
-      {error && <div className="notice error">{error}</div>}
+      {(error ?? scanned.error) && <div className="notice error">{error ?? scanned.error}</div>}
       {done && <div className="notice" style={{ color: 'var(--ok)' }}>{done}</div>}
+      <AutomationNotice active={rules.some((r) => r.auto) || scanned.rules.some((r) => r.auto && r.enabled)} onRan={() => { load(); scanned.load() }} />
+
+      {once && (
+        <section className="card run-confirm" style={hue(12)}>
+          <h2>Run “{once.rule.name}” once?</h2>
+          <p>
+            Gmail found <b>{once.count.toLocaleString()}</b> {once.count === 1 ? 'message' : 'messages'} that match. They will be moved to Trash, and then this cleanup is removed.
+            {' '}Gmail keeps Trash for 30 days and you can undo from Activity until then.
+          </p>
+          <p className="muted">Gmail search: <code>{buildQuery(once.rule.filters, once.rule.actions)}</code></p>
+          {isBroadTrash(once.rule) && (
+            <div className="form" style={{ marginBottom: 12 }}>
+              <label>
+                This cleanup can reach everyday mail. Type <b>TRASH</b> to enable the button.
+                <input value={typed} onChange={(e) => setTyped(e.target.value)} placeholder="TRASH" autoComplete="off" spellCheck={false} style={{ maxWidth: 200 }} />
+              </label>
+            </div>
+          )}
+          <div className="actions">
+            <button className="btn danger" disabled={!!busy || (isBroadTrash(once.rule) && typed.trim().toUpperCase() !== 'TRASH')}
+              onClick={() => run('once-apply', () => finishOnce(once.rule, once.count, typed))}>
+              {busy === 'once-apply' ? 'Working…' : `Move ${once.count.toLocaleString()} to Trash and remove cleanup`}
+            </button>
+            <button className="btn" disabled={!!busy} onClick={() => setOnce(null)}>Not now, keep it saved</button>
+          </div>
+        </section>
+      )}
 
       {editing && (
         <Editor
           initial={editing}
+          typeToggle={blankNew(editing) ? { checked: false, onChange: switchForm } : undefined}
           onCancel={() => setEditing(null)}
-          onSave={async (rule) => { await api.saveCleanupRule(rule); setEditing(null); setPreview(null); await load() }}
+          onSave={async (rule) => {
+            await api.saveCleanupRule(rule); setEditing(null); setPreview(null); setOnce(null); await load()
+            if (rule.runOnce) void startOnce(rule)
+            else if (rule.auto) setDone('Automatic cleanup is on. It starts in a few seconds, and each run appears in Activity.')
+          }}
+        />
+      )}
+
+      {scanned.editing && (
+        <RuleEditor
+          initial={scanned.editing === 'new' ? null : scanned.editing}
+          initialName={carriedName}
+          typeToggle={scanned.editing === 'new' ? { checked: true, onChange: switchForm } : undefined}
+          onCancel={() => scanned.setEditing(null)}
+          onSave={async (rule) => { await window.organizer.saveRule(rule); scanned.setEditing(null); scanned.setPreview(null); await scanned.load() }}
         />
       )}
 
       <section className="card">
         <div className="row" style={{ paddingTop: 0 }}>
-          <h2 style={{ margin: 0 }}>Your cleanup rules</h2>
-          <button className="btn primary" disabled={!!editing} onClick={() => { setDone(null); setEditing({ id: crypto.randomUUID(), name: '', filters: {}, actions: [] }) }}>New rule</button>
+          <h2 style={{ margin: 0 }}>Your rules</h2>
+          <button className="btn primary" disabled={anyEditing} onClick={() => { setDone(null); setCarriedName(''); setEditing(newBlankRule()) }}>New rule</button>
         </div>
-        {rules.length === 0 && <p className="muted">None yet. Start from an idea below, or make your own.</p>}
+        {rules.length === 0 && scanned.rules.length === 0 && <p className="muted">None yet. Start from an idea below, or make your own.</p>}
         {rules.map((rule) => (
           <div className="row" key={rule.id}>
             <div>
               <b>{rule.name}</b>
-              <div className="muted">{describeFilters(rule.filters)} → {describeActions(rule.actions)}</div>
+              {rule.runOnce && <span className="pill once" title="Runs one time, then removes itself">Runs once</span>}
+              {rule.auto && <span className="pill ok" title="Applied on its own, about every 30 minutes while the app is open">Automatic</span>}
+              <div className="muted">{describeFilters(rule.filters)} → {describeActions(rule.actions)} <MoveChips actions={rule.actions} /></div>
             </div>
             <div className="actions">
-              <button className="btn" disabled={!!busy} onClick={() => run(rule.id, async () => { setDone(null); setTyped(''); setPreview({ rule, result: await api.previewCleanup(rule.id) }) })}>
+              {rule.runOnce ? (
+                <button className="btn primary" disabled={!!busy || anyEditing} onClick={() => startOnce(rule)}>
+                  {busy === `once-${rule.id}` ? 'Searching…' : 'Run now'}
+                </button>
+              ) : (
+                <label className="auto-toggle" title="Apply this on its own, with no preview">
+                  <input type="checkbox" checked={!!rule.auto} disabled={!!busy} onChange={() => toggleAuto(rule)} /> Auto
+                </label>
+              )}
+              <button className="btn" disabled={!!busy} onClick={() => run(rule.id, async () => { setDone(null); setTyped(''); setOnce(null); setPreview({ rule, result: await api.previewCleanup(rule.id) }) })}>
                 {busy === rule.id ? 'Searching…' : 'Preview'}
               </button>
-              <button className="btn" disabled={!!busy || !!editing} onClick={() => { setDone(null); setEditing(rule) }}>Edit</button>
+              <button className="btn" disabled={!!busy || anyEditing} onClick={() => { setDone(null); setEditing(rule) }}>Edit</button>
               <button className="btn" disabled={!!busy} onClick={() => run('delete', async () => {
                 if (!window.confirm(`Delete the rule “${rule.name}”? Mail it already changed is not affected.`)) return
-                await api.deleteCleanupRule(rule.id); setPreview(null); await load()
+                await api.deleteCleanupRule(rule.id); setPreview(null); setOnce(null); await load()
               })}>Delete</button>
             </div>
           </div>
         ))}
+        {scanned.rules.map((rule) => <ScannedRuleRow key={rule.id} rule={rule} h={scanned} locked={!!busy || scanned.busy} />)}
       </section>
+
+      <ScannedPreview h={scanned} scanning={scanning} />
 
       {preview && (
         <section className="card" style={{ marginTop: 16 }}>
@@ -240,7 +384,8 @@ export function CleanupTab({ onApplied, prefill, onPrefillUsed }: { onApplied: (
                 if (trashes(preview.rule) && !isBroadTrash(preview.rule) && !window.confirm(`Move ${n.toLocaleString()} messages to Trash?\n\nYou can undo this from the Activity tab, and Gmail empties Trash after 30 days.`)) return
                 const entry = await api.applyCleanup(preview.rule.id, n, typed)
                 setPreview(null)
-                setDone(`Done: ${entry.messageCount.toLocaleString()} messages changed. You can undo it from the Activity tab.`)
+                setDone(`Done: ${entry.messageCount.toLocaleString()} messages changed.${entry.ruleRemoved ? ' The cleanup was removed.' : ''} You can undo it from the Activity tab.`)
+                if (entry.ruleRemoved) await load()
                 onApplied()
               })}
             >
@@ -258,6 +403,7 @@ export function CleanupTab({ onApplied, prefill, onPrefillUsed }: { onApplied: (
             <div className="card idea" key={p.name} style={hue(IDEA_HUES[i % IDEA_HUES.length])}>
               <span className="tile soft"><Icon name={p.actions.some((a) => a.type === 'trash') ? 'cleanup' : 'archive'} size={17} /></span>
               <b>{p.name}</b>
+              <MoveChips actions={p.actions} long />
               <p className="muted">{p.blurb}</p>
               <button className="btn" disabled={!!editing} onClick={() => { setDone(null); setEditing({ id: crypto.randomUUID(), name: p.name, filters: p.filters, actions: p.actions }) }}>Use this</button>
             </div>

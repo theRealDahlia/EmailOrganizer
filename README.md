@@ -21,4 +21,4 @@ npm run typecheck
 
 The app starts on a built-in demo mailbox. To use Gmail, create a Google OAuth client ([docs/GOOGLE_SETUP.md](docs/GOOGLE_SETUP.md)) and connect from the **Accounts** tab. Credentials and tokens are encrypted with the OS keychain. Outlook is next.
 
-**Cleanup** rules (Cleanup tab) find mail with a Gmail search and act on all matches in batches, so they work on a whole inbox in seconds without scanning or downloading it. Header-based **Rules** need the scan.
+Rules live on the **Cleanup** tab. Most find mail with a Gmail search and act on all matches in batches, so they work on a whole inbox in seconds without scanning or downloading it. Rules marked **Scanned mail** (for categories like Receipts or Travel) match on mail the app has downloaded, so they need a scan.

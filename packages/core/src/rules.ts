@@ -15,6 +15,8 @@ export interface Rule {
   match: 'all' | 'any'
   conditions: Condition[]
   actions: MailAction[]
+  /** Applied on its own, every so often while the app is open, with no preview step. */
+  auto?: boolean
 }
 
 export interface PlannedChange {

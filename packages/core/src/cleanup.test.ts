@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   CLEANUP_PRESETS, isBroadTrash, DemoProvider, GmailProvider, applyActionsToMessage, buildQuery, describeFilters,
-  matchesGmailQuery, reverseCleanupActions, validateCleanup, type CleanupRule, type MailMessage,
+  mailMove, matchesGmailQuery, reverseCleanupActions, validateCleanup, type CleanupRule, type MailMessage,
 } from './index'
 
 const rule = (over: Partial<CleanupRule> = {}): CleanupRule => ({
@@ -104,5 +104,31 @@ describe('demo stand-in for Gmail search', () => {
     expect(matches.length).toBeGreaterThan(0)
     expect(matches.every((m) => /sale|deal|%|discount/i.test(m.subject) && matchesGmailQuery(m, q))).toBe(true)
     expect(await d.searchInbox('in:inbox -label:inbox')).toEqual([])
+  })
+})
+
+describe('run once and automatic cleanups', () => {
+  const base = { id: 'r', name: 'Shop', filters: { from: 'deals@shopmart.example' }, actions: [{ type: 'trash' as const }] }
+
+  it('does not allow both at once', () => {
+    expect(validateCleanup({ ...base, runOnce: true, auto: true })).toContain('Choose either “run once” or “run automatically”, not both.')
+    expect(validateCleanup({ ...base, runOnce: true })).toEqual([])
+    expect(validateCleanup({ ...base, auto: true })).toEqual([])
+  })
+
+  it('does not allow an automatic Trash rule that could reach everyday mail', () => {
+    const broad = { id: 'b', name: 'Old', filters: { olderThan: { value: 1, unit: 'y' as const } }, actions: [{ type: 'trash' as const }], allowBroad: true }
+    expect(validateCleanup(broad)).toEqual([])
+    expect(validateCleanup({ ...broad, auto: true }).join(' ')).toMatch(/Automatic cleanups can’t move everyday mail/)
+    expect(validateCleanup({ ...broad, runOnce: true })).toEqual([]) // run once is still allowed, behind the typed confirmation
+  })
+})
+
+describe('mailMove', () => {
+  it('says where an action list moves mail', () => {
+    expect(mailMove([{ type: 'trash' }])).toBe('trash')
+    expect(mailMove([{ type: 'archive' }, { type: 'addLabel', label: 'x' }])).toBe('archive')
+    expect(mailMove([{ type: 'trash' }, { type: 'archive' }])).toBe('trash')
+    expect(mailMove([{ type: 'markRead' }, { type: 'addLabel', label: 'x' }])).toBeNull()
   })
 })

@@ -1,11 +1,35 @@
 import type { CleanupRule, InboxCounts, MailMessage, Overview, PlannedChange, Rule, SenderStat, StorageQuota, Subscription } from '@organizer/core'
 
+/**
+ * An automatic run won't move more than this many messages to Trash in one go. A bigger match is left for the
+ * user to preview and apply, because nobody is watching an automatic run and a mistaken rule shouldn't empty an inbox.
+ */
+export const AUTO_TRASH_LIMIT = 2_000
+
+/** Light, dark, or follow the operating system. */
+export const THEME_PREFS = ['system', 'light', 'dark'] as const
+export type ThemePref = (typeof THEME_PREFS)[number]
+
 export interface ActivityEntry {
   id: number
   at: string
   ruleName: string
   messageCount: number
   undone: boolean
+  /** a run-once cleanup finished and was removed */
+  ruleRemoved?: boolean
+}
+
+/** What the background runner of automatic rules and cleanups has done and left for the user. */
+export interface AutomationStatus {
+  /** ISO time of the last automatic run, if there has been one this session */
+  lastRunAt: string | null
+  /** matches that were more than an automatic run will move, left for the user to preview and apply */
+  needsReview: { id: string; name: string; count: number; kind: 'cleanup' | 'rule' }[]
+  /** rules that couldn't run, with why */
+  errors: { name: string; message: string; kind: 'cleanup' | 'rule' }[]
+  /** how many automatic runs have changed mail so far this session */
+  runs: number
 }
 
 /** Overview of the scanned inbox, plus whether every inbox message was scanned. */
@@ -132,6 +156,18 @@ export interface OrganizerApi {
   previewCleanup(ruleId: string): Promise<CleanupPreview>
   /** Runs the rule on whatever Gmail finds now, unless far more matches than `expectedCount` appeared. */
   applyCleanup(ruleId: string, expectedCount: number, confirmation?: string): Promise<ActivityEntry>
+  /** The saved colour theme choice. */
+  getTheme(): Promise<ThemePref>
+  /** Saves the choice and applies it to every window straight away. Returns what was saved. */
+  setTheme(theme: ThemePref): Promise<ThemePref>
+  /** How many inbox messages a cleanup would change right now, found by Gmail search: no download, no preview. */
+  cleanupCount(ruleId: string): Promise<{ count: number; query: string }>
+  /** What automatic rules and cleanups have done, and what they left for review. */
+  automation(): Promise<AutomationStatus>
+  /** Runs every automatic rule and cleanup now instead of waiting for the next scheduled run. */
+  runAutomaticNow(): Promise<AutomationStatus>
+  /** Called after an automatic run that changed mail; returns an unsubscribe function. */
+  onAutomaticRun(cb: (status: AutomationStatus) => void): () => void
   /** Every sender in the scanned mail, busiest first, for the Senders page. */
   senders(): Promise<SendersResult>
   /** What each one-click clean-up would change for this sender; found by Gmail search, no scan needed. */

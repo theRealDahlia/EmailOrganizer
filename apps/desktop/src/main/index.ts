@@ -1,15 +1,22 @@
-import { app, BrowserWindow, ipcMain, shell } from 'electron'
+import { app, BrowserWindow, ipcMain, nativeTheme, shell } from 'electron'
 import { join } from 'node:path'
 import type { CleanupRule, Rule } from '@organizer/core'
-import type { ScanProgress, SenderAction, UnsubscribeMethod } from '../shared'
+import type { AutomationStatus, ScanProgress, SenderAction, ThemePref, UnsubscribeMethod } from '../shared'
 import { AccountManager } from './accounts'
 import { Store } from './db'
 import { SecretStore } from './secrets'
-import { OrganizerService } from './service'
+import { Settings } from './settings'
+import { AUTO_INTERVAL_MS, OrganizerService } from './service'
 
 let store: Store
 
-function registerIpc(service: OrganizerService, accounts: AccountManager) {
+function registerIpc(service: OrganizerService, accounts: AccountManager, settings: Settings) {
+  ipcMain.handle('getTheme', () => settings.theme())
+  ipcMain.handle('setTheme', (_e, theme: ThemePref) => {
+    settings.setTheme(theme)
+    nativeTheme.themeSource = settings.theme() // the page's prefers-color-scheme (and the window frame) follows this
+    return settings.theme()
+  })
   ipcMain.handle('overview', (_e, refresh?: boolean) => service.overview(refresh))
   ipcMain.handle('accountStatus', () => accounts.status())
   ipcMain.handle('storage', () => service.storage())
@@ -32,6 +39,9 @@ function registerIpc(service: OrganizerService, accounts: AccountManager) {
   ipcMain.handle('deleteCleanupRule', (_e, id: string) => service.deleteCleanupRule(id))
   ipcMain.handle('previewCleanup', (_e, id: string) => service.previewCleanup(id))
   ipcMain.handle('applyCleanup', (_e, id: string, expected: number, confirmation?: string) => service.applyCleanup(id, expected, confirmation))
+  ipcMain.handle('cleanupCount', (_e, id: string) => service.cleanupCount(id))
+  ipcMain.handle('automation', () => service.automation())
+  ipcMain.handle('runAutomaticNow', () => service.runAutomatic())
   ipcMain.handle('senders', () => service.senders())
   ipcMain.handle('senderSummary', (_e, email: string) => service.senderSummary(email))
   ipcMain.handle('cleanSender', (_e, email: string, action: SenderAction, expected: number) => service.cleanSender(email, action, expected))
@@ -84,7 +94,15 @@ app.whenReady().then(() => {
   store = new Store(join(app.getPath('userData'), 'organizer.sqlite'))
   const accounts = new AccountManager(new SecretStore(join(app.getPath('userData'), 'secrets.json')))
   const sendProgress = (p: ScanProgress) => BrowserWindow.getAllWindows().forEach((w) => w.webContents.send('scan-progress', p))
-  registerIpc(new OrganizerService(() => accounts.provider(), store, sendProgress), accounts)
+  const sendAutomatic = (status: AutomationStatus) => BrowserWindow.getAllWindows().forEach((w) => w.webContents.send('automatic-run', status))
+  const service = new OrganizerService(() => accounts.provider(), store, sendProgress, { onAutomatic: sendAutomatic })
+  const settings = new Settings(join(app.getPath('userData'), 'settings.json'))
+  nativeTheme.themeSource = settings.theme() // before the window opens, so it never flashes the wrong theme
+  registerIpc(service, accounts, settings)
+  // Automatic rules and cleanups: shortly after launch, then every half hour while the app is open.
+  const runAutomatic = () => { service.runAutomatic().catch(() => {}) }
+  setTimeout(runAutomatic, 20_000)
+  setInterval(runAutomatic, AUTO_INTERVAL_MS)
   createWindow()
   app.on('activate', () => BrowserWindow.getAllWindows().length === 0 && createWindow())
 })

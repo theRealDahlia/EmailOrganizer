@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import type { OrganizerApi, ScanProgress } from '../shared'
+import type { AutomationStatus, OrganizerApi, ScanProgress } from '../shared'
 
 const call = (channel: string) => (...args: unknown[]) => ipcRenderer.invoke(channel, ...args)
 
@@ -25,6 +25,16 @@ const api: OrganizerApi = {
   deleteCleanupRule: call('deleteCleanupRule') as OrganizerApi['deleteCleanupRule'],
   previewCleanup: call('previewCleanup') as OrganizerApi['previewCleanup'],
   applyCleanup: call('applyCleanup') as OrganizerApi['applyCleanup'],
+  getTheme: call('getTheme') as OrganizerApi['getTheme'],
+  setTheme: call('setTheme') as OrganizerApi['setTheme'],
+  cleanupCount: call('cleanupCount') as OrganizerApi['cleanupCount'],
+  automation: call('automation') as OrganizerApi['automation'],
+  runAutomaticNow: call('runAutomaticNow') as OrganizerApi['runAutomaticNow'],
+  onAutomaticRun: (cb) => {
+    const handler = (_e: Electron.IpcRendererEvent, s: AutomationStatus) => cb(s)
+    ipcRenderer.on('automatic-run', handler)
+    return () => ipcRenderer.removeListener('automatic-run', handler)
+  },
   senders: call('senders') as OrganizerApi['senders'],
   senderSummary: call('senderSummary') as OrganizerApi['senderSummary'],
   cleanSender: call('cleanSender') as OrganizerApi['cleanSender'],

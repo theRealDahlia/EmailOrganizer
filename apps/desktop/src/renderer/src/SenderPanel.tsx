@@ -1,32 +1,33 @@
 import { useEffect, useState } from 'react'
 import { parseListUnsubscribe, type Subscription } from '@organizer/core'
 import type { ActivityEntry, SenderAction, SenderSummary } from '../../shared'
+import { MoveChip } from './Badges'
 import { Icon, hue } from './Icons'
 
 const api = window.organizer
 const errorText = (e: unknown) => (e instanceof Error ? e.message.replace(/^Error invoking remote method '[^']+': (Error: )?/, '') : String(e))
 const plural = (n: number, one: string, many = `${one}s`) => `${n.toLocaleString()} ${n === 1 ? one : many}`
 
-interface Option { action: SenderAction; icon: string; hue: number; title: string; blurb: (s: SenderSummary) => string; destructive?: boolean }
+interface Option { action: SenderAction; moves?: 'trash' | 'archive'; icon: string; hue: number; title: string; blurb: (s: SenderSummary) => string; destructive?: boolean }
 const OPTIONS: Option[] = [
-  { action: 'archive', icon: 'archive', hue: 245, title: 'Archive all', blurb: () => 'Out of the inbox, still searchable' },
+  { action: 'archive', moves: 'archive', icon: 'archive', hue: 245, title: 'Archive all', blurb: () => 'Out of the inbox, still searchable' },
   { action: 'markRead', icon: 'check', hue: 155, title: 'Mark all read', blurb: () => 'Clears the unread badge' },
-  { action: 'trashOlder', icon: 'clock', hue: 35, title: 'Trash older mail', blurb: (s) => `Keeps the last ${s.olderThanMonths === 1 ? 'month' : `${s.olderThanMonths} months`}`, destructive: true },
-  { action: 'trash', icon: 'cleanup', hue: 12, title: 'Trash everything', blurb: () => 'Starred mail is kept', destructive: true },
+  { action: 'trashOlder', moves: 'trash', icon: 'clock', hue: 35, title: 'Trash older mail', blurb: (s) => `Keeps the last ${s.olderThanMonths === 1 ? 'month' : `${s.olderThanMonths} months`}`, destructive: true },
+  { action: 'trash', moves: 'trash', icon: 'cleanup', hue: 12, title: 'Trash everything', blurb: () => 'Starred mail is kept', destructive: true },
 ]
 
 /**
  * What you can do about one sender. Counts come from Gmail searches, so they cover the whole inbox
  * even when only part of it has been scanned. Moving to Trash asks first; everything can be undone.
  */
-export function SenderPanel({ email, name, showUnsubscribe, onChanged, onOpenCleanup, onGoToRules }: {
+export function SenderPanel({ email, name, showUnsubscribe, onChanged, onOpenCleanup, onGoToCleanup }: {
   email: string
   name: string
   /** offer unsubscribe here (the Subscriptions page already has its own buttons) */
   showUnsubscribe?: boolean
   onChanged: () => void
   onOpenCleanup: (email: string, name: string) => void
-  onGoToRules: () => void
+  onGoToCleanup: () => void
 }) {
   const [summary, setSummary] = useState<SenderSummary | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -88,7 +89,7 @@ export function SenderPanel({ email, name, showUnsubscribe, onChanged, onOpenCle
       {done && (
         <div className="notice sp-done" role="status">
           <Icon name="check" size={16} /><span>{done.text}</span>
-          {done.rules && <button className="btn" onClick={onGoToRules}>Go to Rules</button>}
+          {done.rules && <button className="btn" onClick={onGoToCleanup}>Go to Cleanup</button>}
           {done.entry && !done.undone && <button className="btn" disabled={!!busy} onClick={undo}><Icon name="undo" size={14} /> Undo</button>}
         </div>
       )}
@@ -112,7 +113,7 @@ export function SenderPanel({ email, name, showUnsubscribe, onChanged, onOpenCle
                 <button className="sp-button" disabled={!summary || n === 0 || !!busy} onClick={() => (o.destructive ? setConfirming(o.action) : act(o))}>
                   <span className="tile soft"><Icon name={o.icon} size={17} /></span>
                   <span className="sp-text">
-                    <b>{o.title}{summary && <span className="count-chip">{busy === o.action ? '…' : n.toLocaleString()}</span>}</b>
+                    <b>{o.title}{summary && <span className="count-chip">{busy === o.action ? '…' : n.toLocaleString()}</span>}{o.moves && <MoveChip move={o.moves} />}</b>
                     <span className="muted">{summary ? (n === 0 ? 'Nothing to change' : o.blurb(summary)) : ' '}</span>
                   </span>
                 </button>
@@ -125,7 +126,7 @@ export function SenderPanel({ email, name, showUnsubscribe, onChanged, onOpenCle
       <div className="sp-more">
         <button className="btn" onClick={() => run('rule', async () => {
           await api.createArchiveRule(email)
-          setDone({ text: 'Rule created. Apply it in Rules to archive mail from this sender.', rules: true })
+          setDone({ text: 'Rule created. Preview and apply it from Cleanup to archive mail from this sender.', rules: true })
         })}><Icon name="rules" size={15} /> Auto-archive future mail</button>
         <button className="btn" onClick={() => onOpenCleanup(email, name)}><Icon name="cleanup" size={15} /> Custom cleanup…</button>
         {showUnsubscribe && sub && unsub.https && sub.oneClick && <button className="btn" disabled={!!busy} onClick={() => doUnsubscribe('oneClick', 'Unsubscribe request sent.')}><Icon name="bell" size={15} /> Unsubscribe</button>}

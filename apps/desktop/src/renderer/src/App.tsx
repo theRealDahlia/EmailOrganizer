@@ -1,37 +1,27 @@
 import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from 'react'
-import type { InboxCounts, Rule } from '@organizer/core'
-import type { AccountStatus, ActivityEntry, OverviewResult, PreviewResult, ScanProgress } from '../../shared'
-import { RuleEditor } from './RuleEditor'
+import type { InboxCounts } from '@organizer/core'
+import type { AccountStatus, ActivityEntry, OverviewResult, ScanProgress } from '../../shared'
 import { CleanupTab, type CleanupPrefill } from './CleanupTab'
-import { formatBytes } from './format'
-import { CoverageNote, ScanStatus } from './ScanStatus'
+import { ScanStatus } from './ScanStatus'
 import { StorageMeter } from './StorageMeter'
 import { SubscriptionsTab } from './SubscriptionsTab'
 import { Avatar, Icon, PAGE_HUE, categoryHue, hue } from './Icons'
 import { CountUp } from './Motion'
 import { SenderPanel } from './SenderPanel'
 import { SendersTab } from './SendersTab'
+import { ThemeSwitch } from './ThemeSwitch'
 
-type Tab = 'overview' | 'senders' | 'cleanup' | 'subscriptions' | 'rules' | 'activity' | 'accounts'
-const TABS: Tab[] = ['overview', 'senders', 'cleanup', 'subscriptions', 'rules', 'activity', 'accounts']
+type Tab = 'overview' | 'senders' | 'cleanup' | 'subscriptions' | 'activity' | 'accounts'
+const TABS: Tab[] = ['overview', 'senders', 'cleanup', 'subscriptions', 'activity', 'accounts']
 const PAGES: Record<Tab, { title: string; blurb: string }> = {
   overview: { title: 'Overview', blurb: 'What’s filling your inbox, and who it’s from.' },
   senders: { title: 'Senders', blurb: 'Everyone who emails you, and how often.' },
-  cleanup: { title: 'Cleanup', blurb: 'Find old, large or noisy mail and clear it in one go.' },
+  cleanup: { title: 'Cleanup', blurb: 'Rules that archive, trash or label mail, once or on their own.' },
   subscriptions: { title: 'Subscriptions', blurb: 'Newsletters and senders you can unsubscribe from.' },
-  rules: { title: 'Rules', blurb: 'Keep your inbox tidy automatically.' },
   activity: { title: 'Activity', blurb: 'Everything the app has changed. Undo any of it.' },
   accounts: { title: 'Account', blurb: 'Connect Gmail to organize your real inbox.' },
 }
 const api = window.organizer
-
-const trashes = (rule: Rule) => rule.actions.some((a) => a.type === 'trash')
-
-function describe(rule: Rule): string {
-  const c = rule.conditions.map((c) => `${c.field} ${c.op} ${String(c.value)}`).join(rule.match === 'all' ? ' AND ' : ' OR ')
-  const a = rule.actions.map((a) => ('label' in a ? `${a.type} "${a.label}"` : a.type === 'trash' ? 'move to Trash' : a.type)).join(', ')
-  return `When ${c} → ${a}`
-}
 
 const TAB_HUE: Record<string, number> = { primary: 245, social: 200, promotions: 330, updates: 35, forums: 175 }
 
@@ -46,10 +36,10 @@ function Bars({ rows, hueOf }: { rows: [string, number][]; hueOf: (name: string)
   ))
 }
 
-function OverviewTab({ overview, error, progress, onRescan, onCancel, onScanAll, onChanged, onOpenCleanup, onGoToRules }: {
+function OverviewTab({ overview, error, progress, onRescan, onCancel, onScanAll, onChanged, onOpenCleanup, onGoToCleanup }: {
   overview: OverviewResult | null; error: string | null; progress: ScanProgress | null
   onRescan: () => void; onCancel: () => void; onScanAll: () => void; onChanged: () => void
-  onOpenCleanup: (email: string, name: string) => void; onGoToRules: () => void
+  onOpenCleanup: (email: string, name: string) => void; onGoToCleanup: () => void
 }) {
   const [openSender, setOpenSender] = useState<string | null>(null)
   // Totals and tab counts come straight from Gmail, so they show at once while the scan reads senders.
@@ -146,7 +136,7 @@ function OverviewTab({ overview, error, progress, onRescan, onCancel, onScanAll,
                     </tr>
                     {open && (
                       <tr className="detail"><td colSpan={3}>
-                        <SenderPanel email={s.email} name={s.name} showUnsubscribe onChanged={onChanged} onOpenCleanup={onOpenCleanup} onGoToRules={onGoToRules} />
+                        <SenderPanel email={s.email} name={s.name} showUnsubscribe onChanged={onChanged} onOpenCleanup={onOpenCleanup} onGoToCleanup={onGoToCleanup} />
                       </td></tr>
                     )}
                   </Fragment>
@@ -156,97 +146,6 @@ function OverviewTab({ overview, error, progress, onRescan, onCancel, onScanAll,
           </table>}
         </section>
       </div>
-    </>
-  )
-}
-
-function RulesTab({ onApplied, scanning }: { onApplied: () => void; scanning: boolean }) {
-  const [rules, setRules] = useState<Rule[]>([])
-  const [preview, setPreview] = useState<{ rule: Rule; result: PreviewResult } | null>(null)
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const [editing, setEditing] = useState<Rule | 'new' | null>(null)
-
-  const loadRules = () => api.listRules().then(setRules)
-  useEffect(() => { loadRules() }, [])
-
-  const run = async (fn: () => Promise<void>) => {
-    setBusy(true); setError(null)
-    try { await fn() } catch (e) { setError(e instanceof Error ? e.message : String(e)) } finally { setBusy(false) }
-  }
-
-  const toggle = (rule: Rule) => run(async () => {
-    const next = { ...rule, enabled: !rule.enabled }
-    await api.saveRule(next)
-    setRules((rs) => rs.map((r) => (r.id === rule.id ? next : r)))
-  })
-
-  return (
-    <>
-      {error && <div className="notice error">{error}</div>}
-      {editing && (
-        <RuleEditor
-          initial={editing === 'new' ? null : editing}
-          onCancel={() => setEditing(null)}
-          onSave={async (rule) => { await api.saveRule(rule); setEditing(null); setPreview(null); await loadRules() }}
-        />
-      )}
-      <section className="card">
-        <div className="row" style={{ paddingTop: 0 }}>
-          <h2 style={{ margin: 0 }}>Rules</h2>
-          <button className="btn primary" disabled={!!editing} onClick={() => setEditing('new')}>New rule</button>
-        </div>
-        {rules.length === 0 && <p className="muted">No rules yet.</p>}
-        {rules.map((rule) => (
-          <div className="row" key={rule.id}>
-            <div>
-              <label><input type="checkbox" checked={rule.enabled} onChange={() => toggle(rule)} /> <b>{rule.name}</b></label>
-              <div className="muted">{describe(rule)}</div>
-            </div>
-            <div className="actions">
-              <button className="btn" disabled={busy} onClick={() => run(async () => setPreview({ rule, result: await api.preview(rule.id) }))}>Preview</button>
-              <button className="btn" disabled={busy || !!editing} onClick={() => setEditing(rule)}>Edit</button>
-              <button className="btn" disabled={busy} onClick={() => run(async () => {
-                if (!window.confirm(`Delete the rule "${rule.name}"? Mail already changed by it is not affected.`)) return
-                await api.deleteRule(rule.id); setPreview(null); await loadRules()
-              })}>Delete</button>
-            </div>
-          </div>
-        ))}
-      </section>
-      {preview && (
-        <section className="card" style={{ marginTop: 16 }}>
-          <h2>Preview: {preview.rule.name}</h2>
-          <p>This would change <b>{preview.result.changes.length}</b> messages. Nothing has been changed yet.</p>
-          <CoverageNote scan={{ total: preview.result.basis.scanned, inboxTotal: preview.result.basis.inboxTotal, complete: preview.result.basis.complete, scanning: preview.result.basis.scanning }} />
-          {scanning && <div className="notice">A scan is running, so rules can’t be applied until it finishes or you stop it. You can still preview.</div>}
-          {trashes(preview.rule) && (
-            <div className="notice danger">
-              <b>These messages would be moved to Trash</b>, about <b>{formatBytes(preview.result.totalBytes)}</b> in size.
-              Gmail keeps Trash for 30 days and then deletes it permanently, which is when the space is freed. You can undo from the Activity tab until then.
-              Check the list below carefully.
-            </div>
-          )}
-          <table>
-            <tbody>
-              {preview.result.samples.map((m) => (
-                <tr key={m.id}><td>{m.from.name}</td><td>{m.subject}</td><td className="muted">{new Date(m.date).toLocaleDateString()}</td></tr>
-              ))}
-            </tbody>
-          </table>
-          <div className="actions" style={{ marginTop: 12 }}>
-            <button className={trashes(preview.rule) ? 'btn danger' : 'btn primary'} disabled={busy || scanning || preview.result.changes.length === 0}
-              onClick={() => run(async () => {
-                const n = preview.result.changes.length
-                if (trashes(preview.rule) && !window.confirm(`Move ${n} messages to Trash?\n\nYou can undo this from the Activity tab, and Gmail empties Trash after 30 days.`)) return
-                await api.apply(preview.rule.id); setPreview(null); onApplied()
-              })}>
-              {trashes(preview.rule) ? `Move ${preview.result.changes.length} messages to Trash` : `Apply to ${preview.result.changes.length} messages`}
-            </button>
-            <button className="btn" onClick={() => setPreview(null)}>Cancel</button>
-          </div>
-        </section>
-      )}
     </>
   )
 }
@@ -263,7 +162,10 @@ function ActivityTab({ onUndone }: { onUndone: () => void }) {
         <div className="row" key={a.id}>
           <div className="sender">
             <span className="tile soft" style={hue(a.undone ? 220 : 155)}><Icon name={a.undone ? 'activity' : 'archive'} size={17} /></span>
-            <div><b>{a.ruleName}</b> · {a.messageCount.toLocaleString()} messages<div className="muted">{new Date(a.at).toLocaleString()}</div></div>
+            <div>
+              <b>{a.ruleName.replace(/ \(automatic\)$/, '')}</b>{a.ruleName.endsWith(' (automatic)') && <span className="pill ok">Automatic</span>} · {a.messageCount.toLocaleString()} messages
+              <div className="muted">{new Date(a.at).toLocaleString()}</div>
+            </div>
           </div>
           {a.undone ? <span className="muted">Undone</span>
             : <button className="btn" onClick={async () => { await api.undo(a.id); await load(); onUndone() }}>Undo</button>}
@@ -359,6 +261,8 @@ export function App() {
     if (p.phase === 'done') refresh() // pick up the final result straight away
   }), [refresh])
   useEffect(() => { loadStatus(); refresh() }, [loadStatus, refresh])
+  // An automatic rule or cleanup changed mail in the background, so the numbers on screen are out of date.
+  useEffect(() => api.onAutomaticRun(() => refresh()), [refresh])
   // While a scan runs, keep the numbers current as messages arrive.
   const scanning = overview?.scanning ?? false
   useEffect(() => {
@@ -404,6 +308,7 @@ export function App() {
           ))}
         </nav>
         <div className="sidebar-foot">
+          <ThemeSwitch />
           <StorageMeter refreshKey={`${status?.mode}:${status?.email}:${overview?.total}`} onReconnect={() => setTab('accounts')} />
           <button className="account-chip nav-item" onClick={() => setTab('accounts')} title="Manage account">
             <Avatar name={account} />
@@ -419,13 +324,12 @@ export function App() {
           </div>
           {tab === 'overview' && <OverviewTab overview={overview} error={overviewError} progress={progress} onRescan={() => refresh(true)} onCancel={() => { api.cancelScan() }}
             onScanAll={() => { api.scanFullInbox().then(() => refresh()) }}
-            onChanged={() => refresh()} onOpenCleanup={openCleanupFor} onGoToRules={() => setTab('rules')} />}
+            onChanged={() => refresh()} onOpenCleanup={openCleanupFor} onGoToCleanup={() => setTab('cleanup')} />}
           {tab === 'senders' && <SendersTab scanKey={`${overview?.total}:${overview?.scanning}:${overview?.complete}`} progress={progress} onCancel={() => { api.cancelScan() }}
-            onScanAll={() => { api.scanFullInbox().then(() => refresh()) }} onChanged={() => refresh()} onOpenCleanup={openCleanupFor} onGoToRules={() => setTab('rules')} />}
-          {tab === 'cleanup' && <CleanupTab onApplied={() => refresh()} prefill={prefill} onPrefillUsed={() => setPrefill(null)} />}
-          {tab === 'subscriptions' && <SubscriptionsTab scan={overview} onGoToRules={() => setTab('rules')} onChanged={() => refresh()} onOpenCleanup={openCleanupFor} />}
-          {tab === 'rules' && <RulesTab onApplied={() => refresh()} scanning={scanning} />}
-          {tab === 'activity' && <ActivityTab onUndone={() => refresh()} />}
+            onScanAll={() => { api.scanFullInbox().then(() => refresh()) }} onChanged={() => refresh()} onOpenCleanup={openCleanupFor} onGoToCleanup={() => setTab('cleanup')} />}
+          {tab === 'cleanup' && <CleanupTab onApplied={() => refresh()} scanning={scanning} prefill={prefill} onPrefillUsed={() => setPrefill(null)} />}
+          {tab === 'subscriptions' && <SubscriptionsTab scan={overview} onGoToCleanup={() => setTab('cleanup')} onChanged={() => refresh()} onOpenCleanup={openCleanupFor} />}
+                    {tab === 'activity' && <ActivityTab onUndone={() => refresh()} />}
           {tab === 'accounts' && <AccountsTab status={status} onChanged={accountChanged} />}
         </div>
       </main>
