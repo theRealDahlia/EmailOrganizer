@@ -1,10 +1,11 @@
-import { Fragment, useEffect, useState } from 'react'
+import { Fragment, useEffect, useRef, useState } from 'react'
 import { formatStorageBytes } from '@organizer/core'
-import type { ActivityEntry, DuplicatesResult, SendersResult, SpaceCandidate, SpaceGuide } from '../../shared'
+import type { SpaceSource, ActivityEntry, DuplicatesResult, SendersResult, SpaceCandidate, SpaceGuide } from '../../shared'
 import { MoveChip } from './Badges'
 import { formatBytes } from './format'
 import { Avatar, Icon, hue } from './Icons'
 import { SenderPanel } from './SenderPanel'
+import { SpaceDetail } from './SpaceDetail'
 
 const api = window.organizer
 const errorText = (e: unknown) => (e instanceof Error ? e.message.replace(/^Error invoking remote method '[^']+': (Error: )?/, '') : String(e))
@@ -23,6 +24,22 @@ export function SpaceTab({ onChanged, onOpenCleanup, onGoToCleanup }: {
   const [busy, setBusy] = useState<string | null>(null)
   const [done, setDone] = useState<{ text: string; entry: ActivityEntry; undone?: boolean } | null>(null)
   const [open, setOpen] = useState<string | null>(null)
+  // The expanded view of one suggestion, and where the page was scrolled before it opened.
+  const [detail, setDetail] = useState<SpaceSource | null>(null)
+  const scrollBefore = useRef(0)
+  const main = () => document.querySelector('.main')
+  const openDetail = (source: SpaceSource) => { scrollBefore.current = main()?.scrollTop ?? 0; setDetail(source); requestAnimationFrame(() => { const m = main(); if (m) m.scrollTop = 0 }) }
+  const closeDetail = (changed: boolean) => {
+    setDetail(null)
+    if (changed) { setGuide(null); load() } // what's left to clear has changed
+    else requestAnimationFrame(() => { const m = main(); if (m) m.scrollTop = scrollBefore.current })
+  }
+  /** The cards open their expanded view when clicked anywhere except their own buttons and confirmations. */
+  const cardOpens = (source: SpaceSource, label: string) => ({
+    role: 'button', tabIndex: 0, 'aria-label': `${label}: choose which emails to move`, title: 'Click to choose which emails to move',
+    onClick: (e: React.MouseEvent) => { if (!(e.target as HTMLElement).closest('button, a, input, .notice')) openDetail(source) },
+    onKeyDown: (e: React.KeyboardEvent) => { if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); openDetail(source) } },
+  })
   const [dups, setDups] = useState<DuplicatesResult | null>(null)
   const [confirmDups, setConfirmDups] = useState(false)
 
@@ -59,6 +76,8 @@ export function SpaceTab({ onChanged, onOpenCleanup, onGoToCleanup }: {
     try { await api.undo(done.entry.id); setDone({ ...done, text: 'Undone. Everything is back in your inbox.', undone: true }); setGuide(null); onChanged(); load() }
     catch (e) { setError(errorText(e)) } finally { setBusy(null) }
   }
+
+  if (detail) return <SpaceDetail source={detail} onBack={closeDetail} onChanged={onChanged} />
 
   if (error && !guide) return <div className="notice"><p className="error">{error}</p><button className="btn" onClick={load}>Try again</button></div>
 
@@ -111,7 +130,7 @@ export function SpaceTab({ onChanged, onOpenCleanup, onGoToCleanup }: {
           <h2>What to clear</h2>
           <div className="space-list">
             {guide.candidates.map((c) => (
-              <div className="card space-card" key={c.id} style={hue(CANDIDATE_HUES[c.id] ?? 175)}>
+              <div className="card space-card" key={c.id} style={hue(CANDIDATE_HUES[c.id] ?? 175)} {...cardOpens({ kind: 'candidate', id: c.id }, c.title)}>
                 <div className="space-top">
                   <span className="tile soft"><Icon name={c.id.startsWith('attachments') ? 'archive' : 'cleanup'} size={17} /></span>
                   <div className="space-title">
@@ -153,7 +172,7 @@ export function SpaceTab({ onChanged, onOpenCleanup, onGoToCleanup }: {
       )}
 
       {dups && dups.count > 0 && (
-        <section className="card space-card" style={{ marginTop: 16, ...hue(200) }}>
+        <section className="card space-card" style={{ marginTop: 16, ...hue(200) }} {...cardOpens({ kind: 'duplicates' }, 'Duplicate messages')}>
           <div className="space-top">
             <span className="tile soft"><Icon name="copy" size={17} /></span>
             <div className="space-title">

@@ -2,7 +2,7 @@ import { app, BrowserWindow, dialog, ipcMain, nativeTheme, shell } from 'electro
 import { readFileSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { CleanupRule, Rule } from '@organizer/core'
-import type { AutomationStatus, BackgroundPrefs, ScanProgress, SenderAction, ThemePref, UnsubscribeMethod } from '../shared'
+import type { SpaceSource, AutomationStatus, BackgroundPrefs, ScanProgress, SenderAction, ThemePref, UnsubscribeMethod } from '../shared'
 import { AccountManager } from './accounts'
 import { Store } from './db'
 import { SecretStore } from './secrets'
@@ -84,6 +84,8 @@ function registerIpc(service: OrganizerService, accounts: AccountManager, settin
   ipcMain.handle('dismissSuggestion', (_e, id: string) => service.dismissSuggestion(id))
   ipcMain.handle('autoArchiveSender', (_e, email: string) => service.autoArchiveSender(email))
   ipcMain.handle('spaceGuide', () => service.spaceGuide())
+  ipcMain.handle('spaceList', (_e, source: SpaceSource, offset: number, limit?: number) => service.spaceList(source, offset, limit))
+  ipcMain.handle('trashSelected', (_e, source: SpaceSource, ids: string[]) => service.trashSelected(source, ids))
   ipcMain.handle('cleanSpace', (_e, id: string, expected: number) => service.cleanSpace(id, expected))
   ipcMain.handle('impact', () => service.impact())
   ipcMain.handle('unsubscribeStatus', () => service.unsubscribeStatus())

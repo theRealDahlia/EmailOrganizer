@@ -39,6 +39,8 @@ const api: OrganizerApi = {
   dismissSuggestion: call('dismissSuggestion') as OrganizerApi['dismissSuggestion'],
   autoArchiveSender: call('autoArchiveSender') as OrganizerApi['autoArchiveSender'],
   spaceGuide: call('spaceGuide') as OrganizerApi['spaceGuide'],
+  spaceList: call('spaceList') as OrganizerApi['spaceList'],
+  trashSelected: call('trashSelected') as OrganizerApi['trashSelected'],
   cleanSpace: call('cleanSpace') as OrganizerApi['cleanSpace'],
   impact: call('impact') as OrganizerApi['impact'],
   unsubscribeStatus: call('unsubscribeStatus') as OrganizerApi['unsubscribeStatus'],

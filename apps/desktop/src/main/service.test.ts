@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { DemoProvider, GmailProvider, applyActionsToMessage, buildQuery, type CleanupRule, type InboxChanges, type MailMessage, type Rule } from '@organizer/core'
 import type { ScanState, Store } from './db'
-import type { ScanProgress } from '../shared'
+import type { ScanProgress, SpaceSource } from '../shared'
 import { OrganizerService, describeRun } from './service'
 
 /** In-memory stand-in for Store, so these tests don't need the Electron-built SQLite module. */
@@ -1690,5 +1690,80 @@ describe('seeing what the new-mail check is doing', () => {
     await service.runAutomatic()
     expect(service.automation().lastCheckedAt).toBe(at)
     expect(service.automation().lastRunAt).not.toBeNull()
+  })
+})
+
+describe('choosing which emails of a suggestion go to Trash', () => {
+  /** The fake mailbox answers every search with the whole inbox, so each suggestion lists all of it. */
+  const setupChoose = (count = 60) => {
+    const gmail = new FakeGmail()
+    const ids = Array.from({ length: count }, (_, i) => gmail.add(`Sender ${i} <s${i}@mail.example>`, `Big file ${i}`))
+    const store = new FakeStore()
+    const provider = gmail.provider()
+    return { gmail, ids, store, service: new OrganizerService(() => provider, store as unknown as Store) }
+  }
+  const BIG: SpaceSource = { kind: 'candidate', id: 'attachments-25' }
+
+  it('lists a suggestion’s emails a page at a time, downloading only that page', async () => {
+    const { service, gmail } = setupChoose(60)
+    const first = await service.spaceList(BIG, 0)
+    expect(first).toMatchObject({ title: 'Attachments over 25 MB', total: 60, offset: 0 })
+    expect(first.messages).toHaveLength(50)
+    expect(first.messages[0]).toMatchObject({ from: 'Sender 0', email: 's0@mail.example', subject: 'Big file 0', sizeBytes: 2000 })
+    const searchesSoFar = gmail.searches.length
+    const second = await service.spaceList(BIG, 50)
+    expect(second.messages).toHaveLength(10)
+    expect(gmail.searches.length).toBe(searchesSoFar) // the next page didn't search again
+  })
+
+  it('moves only the chosen emails to Trash, says how much that was, and can be undone', async () => {
+    const { service, gmail, ids, store } = setupChoose(10)
+    await service.spaceList(BIG, 0)
+    const entry = await service.trashSelected(BIG, [ids[1], ids[4], ids[7]])
+    expect(entry).toMatchObject({ messageCount: 3, move: 'trash', bytes: 6000 })
+    expect(gmail.modified).toEqual([{ ids: [ids[1], ids[4], ids[7]], add: ['TRASH'], remove: ['INBOX'] }])
+    expect(store.activity[0].ruleName).toBe('Free up space: Attachments over 25 MB')
+
+    await service.undo(entry.id as number)
+    expect(gmail.messages.filter((m) => m.labelIds.includes('INBOX'))).toHaveLength(10)
+  })
+
+  it('ignores anything that isn’t part of the suggestion, and refuses when nothing is', async () => {
+    const { service, gmail, ids } = setupChoose(5)
+    const archived = gmail.add('Old <old@mail.example>', 'Archived', []) // not in the inbox, so not in the suggestion
+    const entry = await service.trashSelected(BIG, [ids[0], archived, 'made-up-id', ids[0]])
+    expect(entry.messageCount).toBe(1)
+    expect(gmail.modified[0].ids).toEqual([ids[0]])
+    await expect(service.trashSelected(BIG, ['made-up-id'])).rejects.toThrow('None of those emails are here any more')
+  })
+
+  it('needs something chosen, not too much at once, and a real suggestion', async () => {
+    const { service } = setupChoose(3)
+    await expect(service.trashSelected(BIG, [])).rejects.toThrow('Choose at least one')
+    await expect(service.trashSelected(BIG, Array.from({ length: 2001 }, (_, i) => `x${i}`))).rejects.toThrow('up to 2,000')
+    await expect(service.spaceList({ kind: 'candidate', id: 'everything' }, 0)).rejects.toThrow('isn’t something the guide suggested')
+    await expect(service.trashSelected({ kind: 'candidate', id: 'everything' }, ['a'])).rejects.toThrow('isn’t something the guide suggested')
+  })
+
+  it('lists and trashes chosen duplicates, keeping the newest copy', async () => {
+    const copy = (id: string, date: string): MailMessage => ({
+      id, accountId: 'me@x.com', from: { name: 'Shop', email: 'shop@x.example' }, subject: 'Your order', date, labels: ['INBOX'], isUnread: true, sizeBytes: 4000,
+    })
+    class Mailbox extends CountingProvider {
+      mail = [copy('a', '2026-03-01T10:15:05Z'), copy('b', '2026-03-01T10:15:40Z'), copy('c', '2026-03-01T10:15:20Z')]
+      override async listInboxIds(unreadOnly: boolean) { return this.mail.filter((m) => m.labels.includes('INBOX') && (!unreadOnly || m.isUnread)).map((m) => m.id) }
+      override async getMessages(ids: string[]) { return this.mail.filter((m) => ids.includes(m.id)) }
+      override async applyActions(ids: string[], actions: Parameters<DemoProvider['applyActions']>[1]) { this.mail = this.mail.map((m) => (ids.includes(m.id) ? applyActionsToMessage(m, actions) : m)) }
+    }
+    const provider = new Mailbox(0)
+    const service = new OrganizerService(() => provider, new FakeStore() as unknown as Store)
+    await service.overview()
+    const list = await service.spaceList({ kind: 'duplicates' }, 0)
+    expect(list).toMatchObject({ title: 'Duplicate messages', total: 2 })
+    expect(list.messages.map((m) => m.id)).toEqual(['c', 'a']) // the extras, newest first; b, the newest, is kept
+
+    const entry = await service.trashSelected({ kind: 'duplicates' }, ['a', 'b']) // b isn't an extra, so it stays
+    expect(entry.messageCount).toBe(1)
+    expect(provider.mail.filter((m) => m.labels.includes('INBOX')).map((m) => m.id).sort()).toEqual(['b', 'c'])
   })
 })

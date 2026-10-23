@@ -120,6 +120,27 @@ export interface SpaceCandidate {
   samples: { from: string; subject: string; date: string; sizeBytes: number }[]
 }
 
+/** Which list the expanded view of the "Free up space" page shows: one of the guide's suggestions, or the duplicates. */
+export type SpaceSource = { kind: 'candidate'; id: string } | { kind: 'duplicates' }
+
+export interface SpaceMessage {
+  id: string
+  from: string
+  email: string
+  subject: string
+  date: string
+  sizeBytes: number
+}
+
+/** One page of the emails behind a suggestion, newest first. */
+export interface SpaceListing {
+  title: string
+  /** how many emails the suggestion covers in all */
+  total: number
+  offset: number
+  messages: SpaceMessage[]
+}
+
 export interface SpaceGuide {
   /** the account's storage (shared with Drive and Photos); null when Gmail can't report it */
   quota: { usedBytes: number; limitBytes?: number } | null
@@ -332,6 +353,13 @@ export interface OrganizerApi {
   autoArchiveSender(email: string): Promise<void>
   /** What is worth clearing to free space, biggest first. Found by Gmail search, so it covers the whole inbox. */
   spaceGuide(): Promise<SpaceGuide>
+  /** A page of the emails behind one suggestion (or the duplicates), newest first. Only this page's details are downloaded. */
+  spaceList(source: SpaceSource, offset: number, limit?: number): Promise<SpaceListing>
+  /**
+   * Moves the chosen emails to Trash (undoable). Only emails that still belong to that suggestion are moved; anything
+   * else in the list is ignored.
+   */
+  trashSelected(source: SpaceSource, ids: string[]): Promise<ActivityEntry>
   /** Moves one candidate's mail to Trash (undoable). Refuses if far more matches than `expectedCount` appeared. */
   cleanSpace(id: string, expectedCount: number): Promise<ActivityEntry>
   /** What the app has done, this month and all time, and what each rule has handled. */

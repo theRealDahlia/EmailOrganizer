@@ -6,7 +6,7 @@ import { AUTO_TRASH_LIMIT } from '../shared'
 import type { ActivityEntry, CleanupPreview, OverviewResult, PreviewResult, AutomationStatus, ScanProgress, SenderAction, SenderSummary, SendersResult, StorageResult } from '../shared'
 import type { Store, UndoStep } from './db'
 import { randomUUID } from 'node:crypto'
-import type { DuplicatesResult, ImportResult, RulesExport, ImpactSummary, ImpactTotals, SpaceCandidate, SpaceGuide, Suggestion, SuggestionsResult, UnsubscribeRecord } from '../shared'
+import type { SpaceListing, SpaceMessage, SpaceSource, DuplicatesResult, ImportResult, RulesExport, ImpactSummary, ImpactTotals, SpaceCandidate, SpaceGuide, Suggestion, SuggestionsResult, UnsubscribeRecord } from '../shared'
 
 /** New messages are downloaded and saved in chunks of this size, so progress survives a stop or crash. */
 const FETCH_CHUNK = 50
@@ -45,6 +45,10 @@ const SPACE_CANDIDATES: { id: string; title: string; blurb: string; filters: Cle
 ]
 /** How many matches of each candidate are downloaded to work out their size (20 quota units each). */
 const SPACE_SAMPLE = 8
+/** Emails per page in the expanded view; each costs 20 quota units to show. */
+const SPACE_PAGE = 50
+/** The most emails one "move the chosen ones" will take; bigger clean-ups use "move all". */
+const SELECT_LIMIT = 2_000
 /** How long to wait after an unsubscribe before checking whether the sender stopped (senders have a few days to act). */
 export const UNSUBSCRIBE_GRACE_MS = 7 * 86_400_000
 /** A plain sentence about what a run did, like "Archived 212 messages and moved 30 to Trash"; empty when it did nothing. */
@@ -887,6 +891,72 @@ export class OrganizerService {
     const provider = this.requireSearch()
     const rule: CleanupRule = { id: `space-${id}`, name: `Free up space: ${def.title}`, filters: def.filters, actions: [{ type: 'trash' }] }
     return this.runCleanup(rule, provider, buildQuery(rule.filters, rule.actions), expectedCount)
+  }
+
+  /** Sizes of emails shown in the expanded view, so trashing a few of them can still say how much space that was. */
+  private listedSizes = new Map<string, number>()
+
+  async spaceList(source: SpaceSource, offset: number, limit = SPACE_PAGE): Promise<SpaceListing> {
+    const from = Math.max(0, Math.floor(Number(offset) || 0))
+    const count = Math.min(100, Math.max(1, Math.floor(Number(limit) || SPACE_PAGE)))
+    const row = (m: MailMessage): SpaceMessage => {
+      this.listedSizes.set(m.id, m.sizeBytes)
+      return { id: m.id, from: m.from.name || m.from.email, email: m.from.email, subject: m.subject, date: m.date, sizeBytes: m.sizeBytes }
+    }
+    if (source.kind === 'duplicates') {
+      const extras = await this.duplicateExtras()
+      return { title: 'Duplicate messages', total: extras.length, offset: from, messages: extras.slice(from, from + count).map(row) }
+    }
+    const def = this.spaceCandidate(source.id)
+    const provider = this.requireSearch()
+    // the ids are cheap to list and are kept until mail changes, so paging doesn't search again
+    const ids = (await this.countOnce(`space-ids:${def.id}`, (p) => p.searchInbox!(buildQuery(def.filters, [{ type: 'trash' }])))) ?? []
+    const page = await provider.getMessages(ids.slice(from, from + count))
+    return { title: def.title, total: ids.length, offset: from, messages: page.map(row) }
+  }
+
+  async trashSelected(source: SpaceSource, ids: string[]): Promise<ActivityEntry> {
+    const chosen = [...new Set((Array.isArray(ids) ? ids : []).filter((id): id is string => typeof id === 'string'))]
+    if (chosen.length === 0) throw new Error('Choose at least one email.')
+    if (chosen.length > SELECT_LIMIT) throw new Error(`Choose up to ${SELECT_LIMIT.toLocaleString()} at a time, or use “Move all to Trash”.`)
+
+    if (source.kind === 'duplicates') {
+      this.requireNoScan()
+      const v = await this.current()
+      if (v.scanning) this.requireNoScan()
+      const allowed = new Set(findDuplicates(v.messages).flatMap((g) => g.extras.map((m) => m.id)))
+      const keep = chosen.filter((id) => allowed.has(id))
+      if (keep.length === 0) throw new Error('None of those are duplicates any more.')
+      const entry = await this.commitToMessages(keep, [{ type: 'trash' }], v.messages, 'Remove duplicate messages', {})
+      this.invalidate()
+      return entry
+    }
+
+    const def = this.spaceCandidate(source.id)
+    const provider = this.requireSearch()
+    // searched again now, so only emails that still belong to this suggestion can be moved
+    const current = new Set(await provider.searchInbox!(buildQuery(def.filters, [{ type: 'trash' }])))
+    const keep = chosen.filter((id) => current.has(id))
+    if (keep.length === 0) throw new Error('None of those emails are here any more. They may have been moved already.')
+    const bytes = keep.reduce((n, id) => n + (this.listedSizes.get(id) ?? 0), 0) || this.sizeOf(provider.accountId, keep)
+    const actions: MailAction[] = [{ type: 'trash' }]
+    await provider.applyActions(keep, actions)
+    this.updateCached(provider.accountId, keep, actions)
+    this.patchViews(keep, actions)
+    this.mailChanged()
+    return this.store.addActivity(`Free up space: ${def.title}`, keep.length, [{ messageIds: keep, actions: reverseCleanupActions(actions) }], { bytes, move: 'trash' })
+  }
+
+  private spaceCandidate(id: string) {
+    const def = SPACE_CANDIDATES.find((c) => c.id === id)
+    if (!def) throw new Error('That isn’t something the guide suggested.')
+    return def
+  }
+
+  /** Extra copies of duplicated messages in the scanned mail, newest first. */
+  private async duplicateExtras(): Promise<MailMessage[]> {
+    const v = await this.current()
+    return findDuplicates(v.messages).flatMap((g) => g.extras).sort((a, b) => b.date.localeCompare(a.date))
   }
 
   // --- Impact: what the app has done for the user ---

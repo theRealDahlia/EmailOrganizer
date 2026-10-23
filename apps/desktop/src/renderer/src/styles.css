@@ -402,3 +402,21 @@ table.fixed.senders th.num { width: 96px; }
 
 /* A faint tint down the sidebar, matching the page's glows. */
 .sidebar { background: linear-gradient(180deg, color-mix(in srgb, hsl(245 80% 65%) 7%, var(--sidebar)) 0%, var(--sidebar) 45%, color-mix(in srgb, hsl(300 70% 65%) 5%, var(--sidebar)) 100%); }
+
+/* ---- Free up space: choosing emails ---- */
+.space-card[role="button"] { cursor: pointer; }
+/* the expanded view is a page of its own, with a back link in place of the page header */
+.content:has(> .space-detail) > .page-head { display: none; }
+.back-link { display: inline-flex; align-items: center; gap: 4px; text-decoration: none; font-weight: 500; }
+.back-chev { display: inline-flex; transform: rotate(90deg); }
+.select-bar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding-bottom: 12px; border-bottom: 1px solid var(--line); margin-bottom: 4px; }
+.select-bar .select-all { margin: 0; font-weight: 500; }
+.select-actions { margin-left: auto; display: inline-flex; align-items: center; gap: 8px; }
+.select-note { margin: 8px 0 12px; padding: 8px 12px; border-radius: 8px; background: var(--accent-soft); font-size: 13px; text-align: center; }
+.space-table td, .space-table th { vertical-align: middle; }
+.space-table tbody tr { cursor: pointer; }
+.space-table tbody tr.picked { background: color-mix(in srgb, var(--danger) 6%, transparent); }
+.space-table .cell-two { display: flex; flex-direction: column; min-width: 0; line-height: 1.3; }
+.space-table .cell-two span, .space-table .cell-subject { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.space-table .cell-two .muted { font-size: 12px; }
+.show-more .muted { align-self: center; font-size: 13px; }
