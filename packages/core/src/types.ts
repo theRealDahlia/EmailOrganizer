@@ -65,6 +65,12 @@ export interface InboxChanges {
   unread: Map<string, boolean>
 }
 
+/** Inbox totals as the mail service counts them, so they need no scan. */
+export interface InboxCounts {
+  total: number
+  unread: number
+}
+
 /** Lets a long operation report that it is alive. */
 export interface ScanHooks {
   /** Called with a running count (ids listed so far, or messages processed so far). */
@@ -93,6 +99,10 @@ export interface MailProvider {
    * any message. Optional.
    */
   searchInbox?(query: string, hooks?: ScanHooks): Promise<string[]>
+  /** Inbox message and unread totals, exact and immediate. Optional. */
+  inboxCounts?(): Promise<InboxCounts>
+  /** Inbox messages in each Gmail tab (primary, social, promotions, updates, forums), counted without downloading any. Optional. */
+  tabCounts?(hooks?: ScanHooks): Promise<Record<string, number>>
   /** Ids of every inbox message, newest first. Cheap: no message content is fetched. */
   listInboxIds(unreadOnly: boolean, opts?: ScanHooks): Promise<string[]>
   /**

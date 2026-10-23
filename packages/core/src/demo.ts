@@ -1,6 +1,6 @@
-import { matchesGmailQuery } from './cleanup'
+import { GMAIL_TABS, matchesGmailQuery } from './cleanup'
 import { applyActionsToMessage } from './rules'
-import type { ScanHooks, MailAction, MailMessage, MailPage, MailProvider, StorageQuota } from './types'
+import type { InboxCounts, ScanHooks, MailAction, MailMessage, MailPage, MailProvider, StorageQuota } from './types'
 
 const SENDERS = [
   { name: 'Daily Digest', email: 'news@dailydigest.example', subject: 'Your morning briefing', unsub: true },
@@ -50,6 +50,15 @@ export class DemoProvider implements MailProvider {
 
   async searchInbox(query: string, _hooks?: ScanHooks): Promise<string[]> {
     return this.messages.filter((m) => matchesGmailQuery(m, query)).map((m) => m.id)
+  }
+
+  async inboxCounts(): Promise<InboxCounts> {
+    const inbox = this.messages.filter((m) => m.labels.includes('INBOX'))
+    return { total: inbox.length, unread: inbox.filter((m) => m.isUnread).length }
+  }
+
+  async tabCounts(): Promise<Record<string, number>> {
+    return Object.fromEntries(await Promise.all(GMAIL_TABS.map(async (tab) => [tab, (await this.searchInbox(`in:inbox category:${tab}`)).length])))
   }
 
   async listInboxIds(unreadOnly: boolean, _hooks?: ScanHooks): Promise<string[]> {

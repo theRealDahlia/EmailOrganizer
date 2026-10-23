@@ -1,4 +1,4 @@
-import type { CleanupRule, MailMessage, Overview, PlannedChange, Rule, StorageQuota, Subscription } from '@organizer/core'
+import type { CleanupRule, InboxCounts, MailMessage, Overview, PlannedChange, Rule, StorageQuota, Subscription } from '@organizer/core'
 
 export interface ActivityEntry {
   id: number
@@ -15,6 +15,8 @@ export type OverviewResult = Overview & {
   complete: boolean
   /** a scan is running now; the figures cover only what has been scanned so far */
   scanning: boolean
+  /** about how long downloading the rest of the inbox would take, when it isn't all scanned */
+  fullScanMinutes?: number
 }
 
 export interface ScanProgress {
@@ -37,6 +39,8 @@ export interface ScanProgress {
   resumed?: boolean
   /** the user pressed Stop; the scan is finishing its current step */
   stopping?: boolean
+  /** downloading the whole inbox, rather than only the newest mail */
+  full?: boolean
 }
 
 export type StorageResult =
@@ -54,6 +58,17 @@ export interface CleanupPreview {
   bytes: number
   bytesAreEstimate: boolean
   sampled: number
+}
+
+/** One-click clean-ups for everything a single sender has in the inbox. */
+export type SenderAction = 'archive' | 'markRead' | 'trash' | 'trashOlder'
+
+/** How many inbox messages each `SenderAction` would change right now, counted by Gmail without downloading mail. */
+export interface SenderSummary {
+  email: string
+  counts: Record<SenderAction, number>
+  /** `trashOlder` keeps mail from the last month */
+  olderThanMonths: number
 }
 
 export type UnsubscribeMethod = 'oneClick' | 'openLink' | 'openMail'
@@ -85,6 +100,12 @@ export interface OrganizerApi {
   onScanProgress(cb: (p: ScanProgress) => void): () => void
   /** Stop the current scan. What was scanned is kept and the next scan resumes from there. */
   cancelScan(): Promise<void>
+  /** Download every inbox message, not just the newest. Call `overview()` afterwards to follow it. */
+  scanFullInbox(): Promise<void>
+  /** Exact inbox totals from the mail service, no scan needed; null if unavailable. */
+  inboxCounts(): Promise<InboxCounts | null>
+  /** Exact inbox mail per Gmail tab, no scan needed; null if unavailable. */
+  tabCounts(): Promise<Record<string, number> | null>
   accountStatus(): Promise<AccountStatus>
   storage(): Promise<StorageResult>
   saveGoogleCredentials(clientId: string, clientSecret: string): Promise<void>
@@ -98,6 +119,12 @@ export interface OrganizerApi {
   previewCleanup(ruleId: string): Promise<CleanupPreview>
   /** Runs the rule on whatever Gmail finds now, unless far more matches than `expectedCount` appeared. */
   applyCleanup(ruleId: string, expectedCount: number, confirmation?: string): Promise<ActivityEntry>
+  /** What each one-click clean-up would change for this sender; found by Gmail search, no scan needed. */
+  senderSummary(email: string): Promise<SenderSummary>
+  /** Runs one of those clean-ups (undoable from Activity). Refuses if far more matches than `expectedCount` appeared. */
+  cleanSender(email: string, action: SenderAction, expectedCount: number): Promise<ActivityEntry>
+  /** Opens a search for this sender's inbox mail in Gmail, in the browser. */
+  openInGmail(email: string): Promise<void>
   subscriptions(): Promise<Subscription[]>
   unsubscribe(senderEmail: string, method: UnsubscribeMethod): Promise<void>
   /** Creates (but does not run) a rule that archives everything from this sender. */

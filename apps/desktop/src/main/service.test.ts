@@ -528,3 +528,131 @@ describe('full-inbox scan', () => {
     expect(store.loadMessages('me@x.com').get(id)!.labels).not.toContain('Shop')
   })
 })
+
+describe('sampled scan', () => {
+  const sampled = (count: number, sampleSize: number) => {
+    const provider = new CountingProvider(count)
+    const store = new FakeStore()
+    const events: ScanProgress[] = []
+    const service = new OrganizerService(() => provider, store as unknown as Store, (p) => events.push(p), { sampleSize })
+    return { provider, store, service, events }
+  }
+
+  it('downloads only the newest messages by default and says how long the rest would take', async () => {
+    const { service, provider, events } = sampled(300, 100)
+    const o = await service.overview()
+    expect(o).toMatchObject({ total: 100, inboxTotal: 300, complete: false, scanning: false })
+    expect(provider.downloaded).toEqual(Array.from({ length: 100 }, (_, i) => `demo-${i}`)) // newest first
+    expect(events.at(-1)).toMatchObject({ phase: 'done', done: 100, total: 100, full: false })
+    expect(o.fullScanMinutes).toBeUndefined() // the demo mailbox isn't rate limited
+  })
+
+  it('downloads only the rest when asked for the whole inbox', async () => {
+    const { service, provider, events } = sampled(300, 100)
+    await service.overview()
+    provider.downloaded = []
+    service.scanFullInbox()
+    expect(await service.overview()).toMatchObject({ total: 300, complete: true })
+    expect(provider.downloaded).toHaveLength(200)
+    expect(events.at(-1)).toMatchObject({ phase: 'done', total: 300, full: true })
+
+    provider.downloaded = []
+    expect(await service.overview(true)).toMatchObject({ total: 300, complete: true }) // a rescan keeps the whole inbox covered
+    expect(provider.downloaded).toEqual([])
+  })
+
+  it('goes back to the sample when a full scan is stopped', async () => {
+    const { service, provider } = sampled(450, 100)
+    await service.overview()
+    service.scanFullInbox()
+    provider.onFetch = () => service.cancelScan()
+    const stopped = await service.overview()
+    expect(stopped).toMatchObject({ complete: false, scanning: false })
+    expect(stopped.total).toBeLessThan(450)
+
+    provider.onFetch = () => {}
+    provider.downloaded = []
+    expect((await service.overview(true)).complete).toBe(false)
+    expect(provider.downloaded).toEqual([]) // the newest 100 are already cached, so the sample needs nothing
+  })
+
+  it('counts the whole inbox and its tabs without downloading any mail', async () => {
+    const { service, provider } = sampled(300, 100)
+    const counts = await service.inboxCounts()
+    const tabs = await service.tabCounts()
+    expect(counts).toEqual({ total: 300, unread: 225 })
+    expect(Object.values(tabs!).reduce((a, b) => a + b, 0)).toBe(300)
+    expect(provider.downloaded).toEqual([])
+  })
+
+  it('recounts after a cleanup changes the inbox', async () => {
+    const { service, store } = sampled(300, 100)
+    expect((await service.inboxCounts())!.total).toBe(300)
+    const rule: CleanupRule = { id: 'c', name: 'Old', filters: { olderThan: { value: 30, unit: 'd' } }, actions: [{ type: 'archive' }] }
+    store.saveCleanupRule(rule)
+    const { count } = await service.previewCleanup('c')
+    await service.applyCleanup('c', count)
+    expect((await service.inboxCounts())!.total).toBe(300 - count)
+  })
+
+  it('reports no counts for a mail service that cannot give them', async () => {
+    const provider = new CountingProvider(10)
+    Object.assign(provider, { inboxCounts: undefined, tabCounts: undefined })
+    const service = new OrganizerService(() => provider, new FakeStore() as unknown as Store)
+    expect(await service.inboxCounts()).toBeNull()
+    expect(await service.tabCounts()).toBeNull()
+  })
+})
+
+describe('one sender at a time', () => {
+  const mailbox = (count = 300) => {
+    const provider = new CountingProvider(count)
+    const store = new FakeStore()
+    return { provider, store, service: new OrganizerService(() => provider, store as unknown as Store) }
+  }
+  const fromSender = (provider: CountingProvider, email: string) =>
+    provider.listMessages().then((p) => p.messages.filter((m) => m.from.email === email))
+
+  it('counts what each clean-up would change without downloading mail', async () => {
+    const { service, provider } = mailbox()
+    const all = (await fromSender(provider, 'deals@shopmart.example')).filter((m) => m.labels.includes('INBOX'))
+    const summary = await service.senderSummary('deals@shopmart.example')
+    expect(summary.counts.archive).toBe(all.length)
+    expect(summary.counts.markRead).toBe(all.filter((m) => m.isUnread).length)
+    expect(summary.counts.trashOlder).toBe(all.filter((m) => Date.now() - Date.parse(m.date) > 30 * 86_400_000).length)
+    expect(summary.counts.trashOlder).toBeLessThan(summary.counts.trash)
+    expect(provider.downloaded).toEqual([])
+  })
+
+  it('trashes only that sender, can be undone, and shows in Activity', async () => {
+    const { service, provider, store } = mailbox()
+    const before = (await fromSender(provider, 'deals@shopmart.example')).length
+    const others = (await provider.listMessages()).messages.length - before
+    const { counts } = await service.senderSummary('deals@shopmart.example')
+    const entry = await service.cleanSender('deals@shopmart.example', 'trash', counts.trash)
+    expect(entry.messageCount).toBe(counts.trash)
+    expect(store.activity[0].ruleName).toBe('Trash mail from deals@shopmart.example')
+    expect((await provider.listInboxIds(false)).length).toBe(300 - counts.trash)
+    expect((await provider.listMessages()).messages.length - before).toBe(others) // nobody else was touched
+
+    await service.undo(entry.id)
+    expect((await provider.listInboxIds(false)).length).toBe(300)
+  })
+
+  it('marks read and archives, and refuses when far more mail matches than was shown', async () => {
+    const { service, provider } = mailbox()
+    const { counts } = await service.senderSummary('news@dailydigest.example')
+    await service.cleanSender('news@dailydigest.example', 'markRead', counts.markRead)
+    expect((await service.senderSummary('news@dailydigest.example')).counts.markRead).toBe(0)
+
+    await expect(service.cleanSender('news@dailydigest.example', 'archive', 1)).rejects.toThrow(/More mail matches now/)
+    await service.cleanSender('news@dailydigest.example', 'archive', counts.archive)
+    expect((await provider.searchInbox!('in:inbox from:(news@dailydigest.example)')).length).toBe(0)
+  })
+
+  it('rejects an address that could change the search', async () => {
+    const { service } = mailbox()
+    await expect(service.senderSummary('a@b.com) OR (in:inbox')).rejects.toThrow(/valid sender/)
+    await expect(service.cleanSender('not an address', 'trash', 10)).rejects.toThrow(/valid sender/)
+  })
+})

@@ -1,8 +1,8 @@
 import {
   StorageScopeError, applyActionsToMessage, buildOverview, buildQuery, isBroadTrash, reverseCleanupActions, validateCleanup, buildSubscriptions, categorize, inverseActions, parseListUnsubscribe, planChanges, validateRule,
-  type CleanupRule, type MailAction, type MailMessage, type MailProvider, type Rule, type Subscription, type UnsubscribeTargets,
+  type CleanupFilters, type CleanupRule, type InboxCounts, type MailAction, type MailMessage, type MailProvider, type Rule, type Subscription, type UnsubscribeTargets,
 } from '@organizer/core'
-import type { ActivityEntry, CleanupPreview, OverviewResult, PreviewResult, ScanProgress, StorageResult } from '../shared'
+import type { ActivityEntry, CleanupPreview, OverviewResult, PreviewResult, ScanProgress, SenderAction, SenderSummary, StorageResult } from '../shared'
 import type { Store, UndoStep } from './db'
 
 /** New messages are downloaded and saved in chunks of this size, so progress survives a stop or crash. */
@@ -12,6 +12,12 @@ const SETTLE_MS = 400
 const RATE_WINDOW_MS = 90_000
 /** Gmail history is only reliable for about a week, so recount the whole inbox at least this often. */
 const FULL_RELIST_AFTER_MS = 6 * 24 * 3_600_000
+/**
+ * Unless the user asks for a full scan, only the newest this-many inbox messages are downloaded: about 7
+ * minutes at Gmail's pace, and enough to show who sends the most and what can be unsubscribed from.
+ * Inbox totals and per-tab counts come straight from Gmail and never need a scan.
+ */
+export const SAMPLE_SIZE = 2_000
 
 interface ScanData {
   provider: MailProvider
@@ -58,12 +64,19 @@ export class OrganizerService {
   private dirty = false
   /** The last finished view, shown while a rescan is still counting the inbox so the screen never goes blank. */
   private stale: ScanData | null = null
+  /** The user asked to download every inbox message, not just the newest `sampleSize`. */
+  private full = false
+  /** Inbox-wide counts from the mail service, kept until mail changes. */
+  private counted = new Map<string, { provider: MailProvider; promise: Promise<unknown> }>()
+  private sampleSize: number
 
   constructor(
     private getProvider: () => MailProvider,
     private store: Store,
     private onProgress: (p: ScanProgress) => void = () => {},
+    options: { sampleSize?: number } = {},
   ) {
+    this.sampleSize = options.sampleSize ?? SAMPLE_SIZE
     if (store.listRules().length === 0) DEFAULT_RULES.forEach((r) => store.saveRule(r))
   }
 
@@ -77,13 +90,44 @@ export class OrganizerService {
     this.stale = reset ? null : (this.cache ?? this.stale)
     this.cache = null
     this.failure = null
+    this.counted.clear()
+    if (reset) this.full = false
   }
 
   /** Stop the running scan. Whatever has been scanned is kept, and the next scan resumes from there. */
   cancelScan(): void {
     if (!this.scanning) return
+    this.full = false // back to the sample; asking for the full scan again resumes from what was saved
     this.scanning.abort.abort()
     if (this.scanning.last) this.onProgress({ ...this.scanning.last, stopping: true }) // so the UI can say "Stopping…"
+  }
+
+  /** Download the rest of the inbox too. The next `overview()` starts the scan; what is cached is kept. */
+  scanFullInbox(): void {
+    this.full = true
+    this.invalidate()
+  }
+
+  /** Exact inbox totals, without a scan; null if the mail service can't count them. */
+  inboxCounts(): Promise<InboxCounts | null> {
+    return this.countOnce('inbox', (p) => p.inboxCounts?.())
+  }
+
+  /** Exact inbox mail per Gmail tab, without a scan; null if the mail service has no tabs. */
+  tabCounts(): Promise<Record<string, number> | null> {
+    return this.countOnce('tabs', (p) => p.tabCounts?.())
+  }
+
+  private countOnce<T>(key: string, load: (p: MailProvider) => Promise<T> | undefined): Promise<T | null> {
+    const provider = this.getProvider()
+    const hit = this.counted.get(key)
+    if (hit?.provider === provider) return hit.promise as Promise<T | null>
+    const promise: Promise<T | null> = (load(provider) ?? Promise.resolve(null)).catch((e) => {
+      if (this.counted.get(key)?.promise === promise) this.counted.delete(key) // let the next call try again
+      throw e
+    })
+    this.counted.set(key, { provider, promise })
+    return promise
   }
 
   /**
@@ -148,8 +192,9 @@ export class OrganizerService {
   }
 
   /**
-   * Incremental full-inbox scan. Listing ids is cheap, so each scan lists every inbox id and the unread
-   * ids, drops cached messages that left the inbox, and downloads metadata only for messages not yet cached.
+   * Incremental inbox scan. Listing ids is cheap, so each scan lists every inbox id and the unread ids,
+   * drops cached messages that left the inbox, and downloads metadata only for messages not yet cached:
+   * among the newest `sampleSize`, or all of them when the user asked for a full scan.
    * Everything known is published to `entry.snapshot` as it goes, so callers can show partial results.
    */
   private async runScan(entry: ScanEntry): Promise<ScanData> {
@@ -157,6 +202,7 @@ export class OrganizerService {
     const signal = entry.abort.signal
     const accountId = provider.accountId
     const persist = accountId !== 'demo' // the demo mailbox lives in memory
+    const full = this.full
 
     const startedAt = Date.now()
     const samples: { at: number; done: number }[] = []
@@ -168,13 +214,13 @@ export class OrganizerService {
       }
       return provider.fetchesPerMinute // not enough data yet: use the provider's nominal pace
     }
-    const report = (p: Omit<ScanProgress, 'startedAt' | 'perMinute'>) => {
+    const report = (p: Omit<ScanProgress, 'startedAt' | 'perMinute' | 'full'>) => {
       if (p.phase === 'fetching' && !p.throttled) {
         const now = Date.now()
         samples.push({ at: now, done: p.done })
         while (samples.length > 1 && now - samples[0].at > RATE_WINDOW_MS) samples.shift()
       }
-      entry.last = { ...p, startedAt, perMinute: perMinute() }
+      entry.last = { ...p, startedAt, perMinute: perMinute(), full }
       this.onProgress(entry.last)
     }
 
@@ -234,9 +280,12 @@ export class OrganizerService {
     entry.seeded = true
     if (persist && readStateChanged.length) this.store.upsertMessages(accountId, readStateChanged)
 
-    const missing = ids.filter((id) => !cached.has(id)) // newest first, so a partial scan covers the most recent mail
+    // ids are newest first, so the sample (and any partial scan) covers the most recent mail
+    const wanted = full ? ids : ids.slice(0, this.sampleSize)
+    const missing = wanted.filter((id) => !cached.has(id))
+    const leftOut = ids.length - wanted.length - ids.slice(wanted.length).filter((id) => cached.has(id)).length
     const have = view.length // already downloaded by earlier scans, and still in the inbox
-    const total = ids.length
+    const total = have + missing.length // what this scan will cover, not the whole inbox when sampling
     const detail = { alreadyHad: have || undefined, arrived: arrivedCount }
     let processed = 0 // messages handled so far, including any that vanished before they could be fetched
     if (missing.length) report({ phase: 'fetching', done: have, total, ...detail }) // show the bar right away, already part-full when resuming
@@ -260,13 +309,18 @@ export class OrganizerService {
     }
 
     report({ phase: 'done', done: have + processed, total, resumed, ...detail })
-    return { provider, messages: view, inboxTotal: ids.length, complete: !signal.aborted }
+    return { provider, messages: view, inboxTotal: ids.length, complete: !signal.aborted && leftOut === 0 }
   }
 
   async overview(refresh = false): Promise<OverviewResult> {
     if (refresh) this.invalidate()
     const v = await this.current()
-    return { ...buildOverview(v.messages), inboxTotal: v.inboxTotal, complete: v.complete, scanning: v.scanning }
+    const pace = this.getProvider().fetchesPerMinute
+    const remaining = v.inboxTotal - v.messages.length
+    return {
+      ...buildOverview(v.messages), inboxTotal: v.inboxTotal, complete: v.complete, scanning: v.scanning,
+      fullScanMinutes: pace && remaining > 0 ? Math.ceil(remaining / pace) : undefined,
+    }
   }
 
   /** Reflect a change in the loaded views, dropping messages that left the inbox. */
@@ -368,6 +422,7 @@ export class OrganizerService {
 
   /** After mail changed behind the scan's back: refresh at once, or once the running scan ends. */
   private mailChanged(): void {
+    this.counted.clear()
     if (this.scanning) this.dirty = true
     else this.invalidate()
   }
@@ -421,6 +476,10 @@ export class OrganizerService {
   /** `confirmation` must be the word TRASH for a rule that could reach everyday mail; checked here, not just on screen. */
   async applyCleanup(ruleId: string, expectedCount: number, confirmation?: string): Promise<ActivityEntry> {
     const { rule, provider, query } = this.cleanupSetup(ruleId)
+    return this.runCleanup(rule, provider, query, expectedCount, confirmation)
+  }
+
+  private async runCleanup(rule: CleanupRule, provider: MailProvider, query: string, expectedCount: number, confirmation?: string): Promise<ActivityEntry> {
     if (isBroadTrash(rule) && confirmation?.trim().toUpperCase() !== 'TRASH') {
       throw new Error('This rule can reach everyday mail. Type TRASH to confirm.')
     }
@@ -436,6 +495,46 @@ export class OrganizerService {
     this.patchViews(ids, rule.actions)
     this.mailChanged()
     return this.store.addActivity(rule.name, ids.length, undo)
+  }
+
+  // --- One sender at a time: the same search-based clean-up, aimed at everything from one address ---
+
+  /** The clean-up for a sender. Trashing keeps starred mail, and "older" keeps the last month. */
+  private senderRule(email: string, action: SenderAction): CleanupRule {
+    const address = email.trim().toLowerCase()
+    if (!/^[^\s<>"(){}\\]+@[^\s<>"(){}\\]+$/.test(address)) throw new Error('That isn’t a valid sender address.')
+    const filters: CleanupFilters = { from: address }
+    if (action === 'trash' || action === 'trashOlder') filters.keepStarred = true
+    if (action === 'trashOlder') filters.olderThan = { value: 1, unit: 'm' }
+    const named = {
+      archive: { name: `Archive mail from ${address}`, actions: [{ type: 'archive' }] },
+      markRead: { name: `Mark mail from ${address} as read`, actions: [{ type: 'markRead' }] },
+      trash: { name: `Trash mail from ${address}`, actions: [{ type: 'trash' }] },
+      trashOlder: { name: `Trash older mail from ${address}`, actions: [{ type: 'trash' }] },
+    }[action] as { name: string; actions: MailAction[] }
+    return { id: `sender-${action}`, filters, ...named }
+  }
+
+  private requireSearch(): MailProvider {
+    const provider = this.getProvider()
+    if (!provider.searchInbox) throw new Error('Search-based cleanup isn’t available for this account.')
+    return provider
+  }
+
+  async senderSummary(email: string): Promise<SenderSummary> {
+    const provider = this.requireSearch()
+    const actions = ['archive', 'markRead', 'trash', 'trashOlder'] as const
+    const found = await Promise.all(actions.map(async (a) => {
+      const rule = this.senderRule(email, a)
+      return [a, (await provider.searchInbox!(buildQuery(rule.filters, rule.actions))).length] as const
+    }))
+    return { email: email.trim().toLowerCase(), counts: Object.fromEntries(found) as Record<SenderAction, number>, olderThanMonths: 1 }
+  }
+
+  async cleanSender(email: string, action: SenderAction, expectedCount: number): Promise<ActivityEntry> {
+    const provider = this.requireSearch()
+    const rule = this.senderRule(email, action)
+    return this.runCleanup(rule, provider, buildQuery(rule.filters, rule.actions), expectedCount)
   }
 
   /** Changing mail while a scan is writing the same cache would race, so wait for it or stop it first. */

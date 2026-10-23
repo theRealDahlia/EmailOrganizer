@@ -154,6 +154,14 @@ footer.storage { font-size: 12px; padding: 12px; background: var(--panel); borde
 .meter i { display: block; height: 100%; background: linear-gradient(90deg, hsl(190 80% 52%), hsl(245 80% 64%)); border-radius: 3px; }
 .meter i.high { background: linear-gradient(90deg, hsl(25 90% 58%), var(--danger)); }
 
+/* ---- Overview coverage ---- */
+.coverage { display: flex; align-items: center; gap: 14px; margin-bottom: 16px; flex-wrap: wrap; background: linear-gradient(120deg, var(--tint) 0%, var(--panel) 60%); }
+.coverage > div { flex: 1 1 320px; min-width: 0; }
+.coverage .muted { font-size: 13px; margin-top: 2px; }
+.card-sub { margin: -10px 0 14px; color: var(--muted); font-size: 12px; }
+.counting { display: flex; align-items: center; gap: 10px; margin: 4px 0; }
+.counting .spinner { width: 14px; height: 14px; }
+
 /* ---- Cleanup ideas ---- */
 .idea { display: flex; flex-direction: column; gap: 10px; align-items: flex-start; border-top: 3px solid var(--solid); }
 .idea p { margin: 0; flex: 1; }
@@ -233,3 +241,36 @@ button.btn.primary:not(:disabled):active { transform: translateY(0); }
   .content { padding: 20px 16px 40px; }
   .stats { grid-template-columns: 1fr; }
 }
+
+/* ---- Sender panel ---- */
+.sender-toggle { display: flex; align-items: center; gap: 10px; width: 100%; min-width: 0; padding: 0; border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; border-radius: 8px; }
+.sender-toggle:hover .avatar { box-shadow: 0 0 0 3px var(--tint, var(--accent-soft)); }
+.sender-toggle .chev { margin-left: auto; flex: none; color: var(--muted); transition: transform var(--motion-200, 200ms) cubic-bezier(0.16, 1, 0.3, 1); }
+.sender-toggle[aria-expanded="true"] .chev { transform: rotate(180deg); color: var(--accent); }
+tr.open > td, .row.open { background: color-mix(in srgb, var(--accent) 4%, transparent); }
+tr.detail > td { padding: 0 6px 14px; background: color-mix(in srgb, var(--accent) 4%, transparent); border-bottom: 1px solid var(--line); }
+.row .sender-panel { flex: 1 1 100%; order: 3; }
+.sender-panel { animation: rise-sm var(--motion-200, 200ms) cubic-bezier(0.16, 1, 0.3, 1) backwards; padding-top: 4px; white-space: normal; }
+.sp-head { margin-bottom: 12px; }
+.sp-stats { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; color: var(--muted); }
+.sp-stats b { color: var(--text); font-weight: 600; }
+.sp-stats .dot { width: 3px; height: 3px; border-radius: 50%; background: var(--muted); opacity: .6; }
+.sp-options { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; margin-bottom: 12px; }
+.sp-option { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; min-width: 0; transition: border-color var(--motion-150, 150ms), box-shadow var(--motion-200, 200ms), transform var(--motion-150, 150ms); }
+.sp-option:hover:not(:has(:disabled)) { border-color: var(--solid); box-shadow: 0 8px 20px -14px var(--solid); transform: translateY(-1px); }
+.sp-button { display: flex; align-items: center; gap: 12px; width: 100%; padding: 12px; border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; border-radius: 10px; }
+.sp-button:disabled { opacity: .5; cursor: default; }
+.sp-text { display: flex; flex-direction: column; min-width: 0; line-height: 1.35; }
+.sp-text b { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-weight: 600; }
+.sp-text .muted { font-size: 12px; }
+.sp-confirm { display: flex; flex-direction: column; gap: 6px; padding: 12px; }
+.sp-confirm .muted { font-size: 12px; }
+.sp-more { display: flex; flex-wrap: wrap; gap: 8px; }
+.sp-more .btn { display: inline-flex; align-items: center; gap: 6px; }
+.sp-done { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; background: var(--ok-soft); border-color: transparent; color: var(--ok); }
+.sp-done span { flex: 1; }
+.sp-done .btn { display: inline-flex; align-items: center; gap: 6px; }
+@media (prefers-reduced-motion: reduce) { .sender-panel, .sender-toggle .chev, .sp-option { animation: none; transition: none; } .sp-option:hover:not(:has(:disabled)) { transform: none; } }
+
+.grid:has(> .card.wide) > .card { grid-column: 1 / -1; }
+.grid > .card.wide { order: -1; } /* an open sender goes first, so its options are in view */

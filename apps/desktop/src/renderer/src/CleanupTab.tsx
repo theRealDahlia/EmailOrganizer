@@ -132,7 +132,10 @@ function Editor({ initial, onSave, onCancel }: { initial: CleanupRule; onSave: (
   )
 }
 
-export function CleanupTab({ onApplied }: { onApplied: () => void }) {
+/** A starting point for the editor, such as the filters for one sender. */
+export interface CleanupPrefill { name: string; filters: CleanupFilters; actions: MailAction[] }
+
+export function CleanupTab({ onApplied, prefill, onPrefillUsed }: { onApplied: () => void; prefill?: CleanupPrefill | null; onPrefillUsed?: () => void }) {
   const [rules, setRules] = useState<CleanupRule[]>([])
   const [editing, setEditing] = useState<CleanupRule | null>(null)
   const [preview, setPreview] = useState<{ rule: CleanupRule; result: CleanupPreview } | null>(null)
@@ -143,6 +146,12 @@ export function CleanupTab({ onApplied }: { onApplied: () => void }) {
 
   const load = () => api.cleanupRules().then(setRules)
   useEffect(() => { load() }, [])
+  useEffect(() => {
+    if (!prefill) return
+    setDone(null)
+    setEditing({ id: crypto.randomUUID(), name: prefill.name, filters: prefill.filters, actions: prefill.actions })
+    onPrefillUsed?.()
+  }, [prefill]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const run = async (label: string, fn: () => Promise<void>) => {
     setBusy(label); setError(null)

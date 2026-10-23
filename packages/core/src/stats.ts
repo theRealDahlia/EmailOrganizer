@@ -14,7 +14,10 @@ export interface Overview {
   unread: number
   byCategory: Record<string, number>
   topSenders: SenderStat[]
+  /** the most prolific senders with an unsubscribe option (at most `topN`) */
   subscriptions: SenderStat[]
+  /** how many senders have an unsubscribe option in all */
+  subscriptionCount: number
 }
 
 export function buildOverview(messages: MailMessage[], topN = 10): Overview {
@@ -39,12 +42,14 @@ export function buildOverview(messages: MailMessage[], topN = 10): Overview {
   }
 
   const all = [...senders.values()].sort((a, b) => b.count - a.count)
+  const subscriptions = all.filter((s) => s.hasUnsubscribe)
   return {
     total: messages.length,
     unread,
     byCategory,
     topSenders: all.slice(0, topN),
-    subscriptions: all.filter((s) => s.hasUnsubscribe).slice(0, topN),
+    subscriptions: subscriptions.slice(0, topN),
+    subscriptionCount: subscriptions.length,
   }
 }
 

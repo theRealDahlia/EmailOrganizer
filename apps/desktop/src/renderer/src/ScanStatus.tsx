@@ -46,7 +46,7 @@ export function ScanStatus({ progress, compact, onCancel }: { progress: ScanProg
     <section className={`card scan-status${compact ? ' compact' : ''}`} aria-live="polite">
       <div className="scan-head">
         <span className="spinner" aria-hidden="true" />
-        <h2 style={{ margin: 0 }}>Scanning your inbox</h2>
+        <h2 style={{ margin: 0 }}>{progress?.full ? 'Scanning your whole inbox' : 'Reading your newest mail'}</h2>
         <span className="muted scan-clock" title="Time spent on this scan">{clock(elapsed)}</span>
         <button
           className={`btn danger${stopping ? ' stopping' : ''}`}
@@ -111,7 +111,7 @@ export function CoverageNote({ scan }: { scan: Pick<OverviewResult, 'total' | 'i
   if (scan.complete && !scan.scanning) return null
   return (
     <p className="muted" style={{ margin: '0 0 12px' }}>
-      Based on {scan.total.toLocaleString()} of {scan.inboxTotal.toLocaleString()} inbox messages{scan.scanning ? ' scanned so far (newest first)' : ' (the scan was stopped)'}.
+      Based on {scan.scanning ? `${scan.total.toLocaleString()} of ${scan.inboxTotal.toLocaleString()} inbox messages scanned so far (newest first)` : `your newest ${scan.total.toLocaleString()} of ${scan.inboxTotal.toLocaleString()} inbox messages. Scan your whole inbox from Overview to include the rest`}.
     </p>
   )
 }

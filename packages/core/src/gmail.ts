@@ -1,6 +1,7 @@
 import { AuthExpiredError } from './oauth'
 import { StorageScopeError, parseStorageQuota } from './storage'
-import type { Address, InboxChanges, MailAction, ScanHooks, MailMessage, MailPage, MailProvider, StorageQuota } from './types'
+import { GMAIL_TABS } from './cleanup'
+import type { Address, InboxChanges, InboxCounts, MailAction, ScanHooks, MailMessage, MailPage, MailProvider, StorageQuota } from './types'
 
 const API = 'https://gmail.googleapis.com/gmail/v1/users/me'
 const METADATA_HEADERS = ['From', 'Subject', 'List-Unsubscribe', 'List-Unsubscribe-Post']
@@ -178,6 +179,21 @@ export class GmailProvider implements MailProvider {
       pageToken = page.nextPageToken
     } while (pageToken && ids.length < MAX_SEARCH_RESULTS)
     return ids
+  }
+
+  /** Totals straight from the INBOX label (labels.get: 1 quota unit), so the overview needs no scan for them. */
+  async inboxCounts(): Promise<InboxCounts> {
+    const label = await this.request<{ messagesTotal?: number; messagesUnread?: number }>('/labels/INBOX')
+    return { total: label.messagesTotal ?? 0, unread: label.messagesUnread ?? 0 }
+  }
+
+  /**
+   * Inbox mail in each tab, by listing each tab's matches. The category labels themselves count archived
+   * mail too, and a search's resultSizeEstimate is too rough to show, so the ids are listed (5 units per 500).
+   */
+  async tabCounts(hooks: ScanHooks = {}): Promise<Record<string, number>> {
+    const counts = await Promise.all(GMAIL_TABS.map(async (tab) => [tab, (await this.searchInbox(`in:inbox category:${tab}`, hooks)).length] as const))
+    return Object.fromEntries(counts)
   }
 
   async listInboxIds(unreadOnly: boolean, hooks: ScanHooks = {}): Promise<string[]> {

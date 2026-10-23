@@ -1,7 +1,7 @@
 import { app, BrowserWindow, ipcMain, shell } from 'electron'
 import { join } from 'node:path'
 import type { CleanupRule, Rule } from '@organizer/core'
-import type { ScanProgress, UnsubscribeMethod } from '../shared'
+import type { ScanProgress, SenderAction, UnsubscribeMethod } from '../shared'
 import { AccountManager } from './accounts'
 import { Store } from './db'
 import { SecretStore } from './secrets'
@@ -16,6 +16,9 @@ function registerIpc(service: OrganizerService, accounts: AccountManager) {
   ipcMain.handle('saveGoogleCredentials', (_e, id: string, secret: string) => accounts.saveCredentials(id, secret))
   ipcMain.handle('connectGmail', async () => { await accounts.connect(); service.invalidate(true) })
   ipcMain.handle('cancelScan', () => service.cancelScan())
+  ipcMain.handle('scanFullInbox', () => service.scanFullInbox())
+  ipcMain.handle('inboxCounts', () => service.inboxCounts())
+  ipcMain.handle('tabCounts', () => service.tabCounts())
   ipcMain.handle('disconnect', async () => {
     const email = accounts.status().email
     await accounts.disconnect()
@@ -29,6 +32,14 @@ function registerIpc(service: OrganizerService, accounts: AccountManager) {
   ipcMain.handle('deleteCleanupRule', (_e, id: string) => service.deleteCleanupRule(id))
   ipcMain.handle('previewCleanup', (_e, id: string) => service.previewCleanup(id))
   ipcMain.handle('applyCleanup', (_e, id: string, expected: number, confirmation?: string) => service.applyCleanup(id, expected, confirmation))
+  ipcMain.handle('senderSummary', (_e, email: string) => service.senderSummary(email))
+  ipcMain.handle('cleanSender', (_e, email: string, action: SenderAction, expected: number) => service.cleanSender(email, action, expected))
+  ipcMain.handle('openInGmail', async (_e, email: string) => {
+    if (!/^[^\s<>"(){}\\]+@[^\s<>"(){}\\]+$/.test(email)) throw new Error('That isn’t a valid sender address.')
+    const account = accounts.status().email
+    const search = encodeURIComponent(`in:inbox from:${email}`)
+    await shell.openExternal(`https://mail.google.com/mail/${account ? `?authuser=${encodeURIComponent(account)}` : ''}#search/${search}`)
+  })
   ipcMain.handle('subscriptions', () => service.subscriptions())
   ipcMain.handle('createArchiveRule', (_e, email: string) => service.createArchiveRule(email))
   ipcMain.handle('unsubscribe', async (_e, email: string, method: UnsubscribeMethod) => {

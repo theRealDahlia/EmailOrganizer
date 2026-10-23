@@ -2,11 +2,15 @@ import { useEffect, useState } from 'react'
 import { parseListUnsubscribe, type Subscription } from '@organizer/core'
 import type { OverviewResult } from '../../shared'
 import { CoverageNote } from './ScanStatus'
-import { Avatar } from './Icons'
+import { Avatar, Icon } from './Icons'
+import { SenderPanel } from './SenderPanel'
 
 const api = window.organizer
 
-export function SubscriptionsTab({ scan, onGoToRules }: { scan: OverviewResult | null; onGoToRules: () => void }) {
+export function SubscriptionsTab({ scan, onGoToRules, onChanged, onOpenCleanup }: {
+  scan: OverviewResult | null; onGoToRules: () => void; onChanged: () => void; onOpenCleanup: (email: string, name: string) => void
+}) {
+  const [openSender, setOpenSender] = useState<string | null>(null)
   const [subs, setSubs] = useState<Subscription[] | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [confirming, setConfirming] = useState<string | null>(null)
@@ -40,17 +44,22 @@ export function SubscriptionsTab({ scan, onGoToRules }: { scan: OverviewResult |
         {subs.map((s) => {
           const t = parseListUnsubscribe(s.listUnsubscribe)
           return (
-            <div className="row" key={s.email}>
-              <div className="sender">
+            <div className={`row${openSender === s.email ? ' open' : ''}`} key={s.email}>
+              <button className="sender-toggle" style={{ flex: '1 1 280px' }} aria-expanded={openSender === s.email}
+                aria-label={`${openSender === s.email ? 'Hide' : 'Show'} options for ${s.name || s.email}`}
+                onClick={() => setOpenSender(openSender === s.email ? null : s.email)}>
                 <Avatar name={s.name || s.email} />
-                <div>
-                <b>{s.name}</b> <span className="muted">{s.email}</span>
-                <div className="muted">
-                  {s.count} emails · {Math.round(s.readRate * 100)}% read{s.readRate < 0.2 && <> <span className="pill warn">rarely read</span></>} · last {new Date(s.lastDate).toLocaleDateString()}
-                </div>
-                {done[s.email] && <div style={{ color: 'var(--ok)' }}>{done[s.email]}</div>}
-                </div>
-              </div>
+                <span className="sender">
+                  <div>
+                    <b>{s.name}</b> <span className="muted">{s.email}</span>
+                    <div className="muted">
+                      {s.count} emails · {Math.round(s.readRate * 100)}% read{s.readRate < 0.2 && <> <span className="pill warn">rarely read</span></>} · last {new Date(s.lastDate).toLocaleDateString()}
+                    </div>
+                    {done[s.email] && <div style={{ color: 'var(--ok)' }}>{done[s.email]}</div>}
+                  </div>
+                </span>
+                <span className="chev"><Icon name="chevron" size={16} /></span>
+              </button>
               <div className="actions">
                 {s.oneClick && t.https && (confirming === s.email
                   ? <button className="btn primary" disabled={busy === s.email} onClick={() => act(s.email, async () => { await api.unsubscribe(s.email, 'oneClick'); return 'Unsubscribe request sent.' })}>Confirm: unsubscribe</button>
@@ -63,6 +72,7 @@ export function SubscriptionsTab({ scan, onGoToRules }: { scan: OverviewResult |
                 )}
                 <button className="btn" disabled={!!busy} onClick={() => act(s.email, async () => { await api.createArchiveRule(s.email); return 'Rule created. Review and apply it in Rules.' })}>Auto-archive</button>
               </div>
+              {openSender === s.email && <SenderPanel email={s.email} name={s.name} onChanged={onChanged} onOpenCleanup={onOpenCleanup} onGoToRules={onGoToRules} />}
             </div>
           )
         })}

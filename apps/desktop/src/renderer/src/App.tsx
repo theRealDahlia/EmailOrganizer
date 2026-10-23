@@ -1,14 +1,15 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from 'react'
-import type { Rule } from '@organizer/core'
+import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from 'react'
+import type { InboxCounts, Rule } from '@organizer/core'
 import type { AccountStatus, ActivityEntry, OverviewResult, PreviewResult, ScanProgress } from '../../shared'
 import { RuleEditor } from './RuleEditor'
-import { CleanupTab } from './CleanupTab'
+import { CleanupTab, type CleanupPrefill } from './CleanupTab'
 import { formatBytes } from './format'
 import { CoverageNote, ScanStatus } from './ScanStatus'
 import { StorageMeter } from './StorageMeter'
 import { SubscriptionsTab } from './SubscriptionsTab'
 import { Avatar, Icon, PAGE_HUE, categoryHue, hue } from './Icons'
 import { CountUp } from './Motion'
+import { SenderPanel } from './SenderPanel'
 
 type Tab = 'overview' | 'cleanup' | 'subscriptions' | 'rules' | 'activity' | 'accounts'
 const TABS: Tab[] = ['overview', 'cleanup', 'subscriptions', 'rules', 'activity', 'accounts']
@@ -30,9 +31,36 @@ function describe(rule: Rule): string {
   return `When ${c} → ${a}`
 }
 
-function OverviewTab({ overview, error, progress, onRescan, onCancel }: {
-  overview: OverviewResult | null; error: string | null; progress: ScanProgress | null; onRescan: () => void; onCancel: () => void
+const TAB_HUE: Record<string, number> = { primary: 245, social: 200, promotions: 330, updates: 35, forums: 175 }
+
+/** Counts bars against the largest share, so even small groups stay visible. */
+function Bars({ rows, hueOf }: { rows: [string, number][]; hueOf: (name: string) => number }) {
+  const max = Math.max(1, ...rows.map(([, n]) => n))
+  return rows.map(([name, n]) => (
+    <div key={name} className="cat-row" style={hue(hueOf(name))}>
+      <div className="cat-top"><span className="cat-name">{name[0].toUpperCase() + name.slice(1)}</span><span className="muted">{n.toLocaleString()}</span></div>
+      <div className="bar"><i style={{ width: `${(n / max) * 100}%` }} /></div>
+    </div>
+  ))
+}
+
+function OverviewTab({ overview, error, progress, onRescan, onCancel, onScanAll, onChanged, onOpenCleanup, onGoToRules }: {
+  overview: OverviewResult | null; error: string | null; progress: ScanProgress | null
+  onRescan: () => void; onCancel: () => void; onScanAll: () => void; onChanged: () => void
+  onOpenCleanup: (email: string, name: string) => void; onGoToRules: () => void
 }) {
+  const [openSender, setOpenSender] = useState<string | null>(null)
+  // Totals and tab counts come straight from Gmail, so they show at once while the scan reads senders.
+  const [counts, setCounts] = useState<InboxCounts | null>(null)
+  const [tabs, setTabs] = useState<Record<string, number> | null | 'loading'>('loading')
+  const countsKey = overview ? `${overview.inboxTotal}:${overview.complete}` : ''
+  useEffect(() => {
+    let current = true
+    api.inboxCounts().then((c) => current && setCounts(c), () => current && setCounts(null))
+    api.tabCounts().then((t) => current && setTabs(t), () => current && setTabs(null))
+    return () => { current = false }
+  }, [countsKey])
+
   if (error) {
     return (
       <div className="notice">
@@ -42,57 +70,88 @@ function OverviewTab({ overview, error, progress, onRescan, onCancel }: {
     )
   }
   if (!overview) return <p className="muted">Loading…</p>
-  // Nothing to show yet (first-ever scan): the status card is the whole page.
-  if (overview.scanning && overview.total === 0) return <ScanStatus progress={progress} onCancel={onCancel} />
 
+  const sampled = !overview.complete
+  const sample = `your newest ${overview.total.toLocaleString()} messages`
   const cats = Object.entries(overview.byCategory).sort((a, b) => b[1] - a[1])
+  const tabRows = tabs && tabs !== 'loading' ? Object.entries(tabs).filter(([, n]) => n > 0).sort((a, b) => b[1] - a[1]) : []
   return (
     <>
-      {overview.scanning && <div style={{ marginBottom: 16 }}><ScanStatus progress={progress} compact onCancel={onCancel} /></div>}
-      {!overview.complete && !overview.scanning && (
-        <div className="notice">
-          Scan stopped: showing {overview.total.toLocaleString()} of {overview.inboxTotal.toLocaleString()} inbox messages (the newest first).{' '}
-          <button className="btn" onClick={onRescan}>Resume scan</button>
+      {overview.scanning && <ScanStatus progress={progress} compact onCancel={onCancel} />}
+      {sampled && !overview.scanning && (
+        <div className="card coverage" style={hue(245)}>
+          <span className="tile soft"><Icon name="inbox" size={17} /></span>
+          <div>
+            <b>Senders and subscriptions come from {sample}.</b>
+            <div className="muted">Totals and tabs already cover your whole inbox. Scan the rest for exact sender counts{overview.fullScanMinutes ? `, about ${overview.fullScanMinutes.toLocaleString()} min` : ''}. You can keep using the app meanwhile.</div>
+          </div>
+          <button className="btn primary" onClick={onScanAll}>Scan whole inbox</button>
         </div>
       )}
       <div className="stats">
         <div className="card stat" style={hue(245)}>
           <span className="tile"><Icon name="inbox" /></span>
-          <b><CountUp value={overview.total} /></b>
-          <span>{overview.complete && !overview.scanning ? 'messages in inbox' : `of ${overview.inboxTotal.toLocaleString()} scanned`}</span>
+          <b><CountUp value={counts?.total ?? overview.inboxTotal} /></b>
+          <span>messages in inbox</span>
         </div>
         <div className="card stat" style={hue(28)}>
           <span className="tile"><Icon name="unread" /></span>
-          <b><CountUp value={overview.unread} /></b><span>unread</span>
+          <b><CountUp value={counts?.unread ?? overview.unread} /></b>
+          <span>{counts || !sampled ? 'unread' : 'unread in newest mail'}</span>
         </div>
         <div className="card stat" style={hue(330)}>
           <span className="tile"><Icon name="subscriptions" /></span>
-          <b><CountUp value={overview.subscriptions.length} /></b><span>subscriptions</span>
+          <b><CountUp value={overview.subscriptionCount} /></b>
+          <span>{sampled ? 'subscriptions found so far' : 'subscriptions'}</span>
         </div>
       </div>
       <div className="grid">
-        <section className="card">
-          <h2>Categories</h2>
-          {cats.map(([name, n]) => (
-            <div key={name} className="cat-row" style={hue(categoryHue(name))}>
-              <div className="cat-top"><span className="cat-name">{name[0].toUpperCase() + name.slice(1)}</span><span className="muted">{n.toLocaleString()}</span></div>
-              <div className="bar"><i style={{ width: `${(n / overview.total) * 100}%` }} /></div>
-            </div>
-          ))}
-        </section>
-        <section className="card">
+        {tabs === null ? (
+          <section className="card">
+            <h2>Categories</h2>
+            {sampled && <p className="card-sub">In {sample}</p>}
+            <Bars rows={cats} hueOf={categoryHue} />
+          </section>
+        ) : (
+          <section className="card">
+            <h2>Inbox tabs</h2>
+            <p className="card-sub">Your whole inbox, as Gmail sorts it</p>
+            {tabs === 'loading'
+              ? <p className="muted counting"><span className="spinner" aria-hidden="true" /> Counting your tabs…</p>
+              : <Bars rows={tabRows} hueOf={(t) => TAB_HUE[t] ?? categoryHue(t)} />}
+          </section>
+        )}
+        <section className={`card${openSender ? ' wide' : ''}`}>
           <h2>Top senders</h2>
-          <table className="fixed">
+          {sampled && overview.total > 0 && <p className="card-sub">In {sample}</p>}
+          {overview.total === 0 && <p className="muted counting"><span className="spinner" aria-hidden="true" /> Reading your newest mail…</p>}
+          {overview.total > 0 && <table className="fixed">
             <thead><tr><th>Sender</th><th className="num">Count</th><th className="num">Unread</th></tr></thead>
             <tbody>
-              {overview.topSenders.map((s) => (
-                <tr key={s.email}>
-                  <td><div className="sender"><Avatar name={s.name || s.email} /><div>{s.name}<div className="muted">{s.email}</div></div></div></td>
-                  <td className="num">{s.count.toLocaleString()}</td><td className="num">{s.unread > 0 ? <span className="count-chip" style={hue(28)}>{s.unread.toLocaleString()}</span> : <span className="muted">0</span>}</td>
-                </tr>
-              ))}
+              {overview.topSenders.map((s) => {
+                const open = openSender === s.email
+                return (
+                  <Fragment key={s.email}>
+                    <tr className={open ? 'open' : undefined}>
+                      <td>
+                        <button className="sender-toggle" aria-expanded={open} aria-label={`${open ? 'Hide' : 'Show'} options for ${s.name || s.email}`} onClick={() => setOpenSender(open ? null : s.email)}>
+                          <Avatar name={s.name || s.email} />
+                          <span className="sender"><div>{s.name}<div className="muted">{s.email}</div></div></span>
+                          <span className="chev"><Icon name="chevron" size={16} /></span>
+                        </button>
+                      </td>
+                      <td className="num">{s.count.toLocaleString()}</td><td className="num">{s.unread > 0 ? <span className="count-chip" style={hue(28)}>{s.unread.toLocaleString()}</span> : <span className="muted">0</span>}</td>
+                    </tr>
+                    {open && (
+                      <tr className="detail"><td colSpan={3}>
+                        <SenderPanel email={s.email} name={s.name} showUnsubscribe onChanged={onChanged} onOpenCleanup={onOpenCleanup} onGoToRules={onGoToRules} />
+                      </td></tr>
+                    )}
+                  </Fragment>
+                )
+              })}
             </tbody>
-          </table>
+          </table>}
         </section>
       </div>
     </>
@@ -279,6 +338,12 @@ export function App() {
   const [progress, setProgress] = useState<ScanProgress | null>(null)
   const [overviewError, setOverviewError] = useState<string | null>(null)
   const [status, setStatus] = useState<AccountStatus | null>(null)
+  // "Custom cleanup" on a sender opens the Cleanup editor already filled in for them.
+  const [prefill, setPrefill] = useState<CleanupPrefill | null>(null)
+  const openCleanupFor = (email: string, name: string) => {
+    setPrefill({ name: `Mail from ${name || email}`, filters: { from: email, keepStarred: true }, actions: [{ type: 'archive' }] })
+    setTab('cleanup')
+  }
 
   const refresh = useCallback((force = false) => {
     setOverviewError(null) // the previous overview stays on screen while a rescan starts
@@ -348,11 +413,13 @@ export function App() {
         <div className="content" key={tab /* remount so the page's entrance plays on every switch */}>
           <div className="page-head">
             <div><h1>{head.title}</h1><p>{head.blurb}</p></div>
-            {tab === 'overview' && overview?.complete && !overview.scanning && <button className="btn" onClick={() => refresh(true)}>Rescan inbox</button>}
+            {tab === 'overview' && overview && !overview.scanning && <button className="btn" onClick={() => refresh(true)}>Rescan inbox</button>}
           </div>
-          {tab === 'overview' && <OverviewTab overview={overview} error={overviewError} progress={progress} onRescan={() => refresh(true)} onCancel={() => { api.cancelScan() }} />}
-          {tab === 'cleanup' && <CleanupTab onApplied={() => refresh()} />}
-          {tab === 'subscriptions' && <SubscriptionsTab scan={overview} onGoToRules={() => setTab('rules')} />}
+          {tab === 'overview' && <OverviewTab overview={overview} error={overviewError} progress={progress} onRescan={() => refresh(true)} onCancel={() => { api.cancelScan() }}
+            onScanAll={() => { api.scanFullInbox().then(() => refresh()) }}
+            onChanged={() => refresh()} onOpenCleanup={openCleanupFor} onGoToRules={() => setTab('rules')} />}
+          {tab === 'cleanup' && <CleanupTab onApplied={() => refresh()} prefill={prefill} onPrefillUsed={() => setPrefill(null)} />}
+          {tab === 'subscriptions' && <SubscriptionsTab scan={overview} onGoToRules={() => setTab('rules')} onChanged={() => refresh()} onOpenCleanup={openCleanupFor} />}
           {tab === 'rules' && <RulesTab onApplied={() => refresh()} scanning={scanning} />}
           {tab === 'activity' && <ActivityTab onUndone={() => refresh()} />}
           {tab === 'accounts' && <AccountsTab status={status} onChanged={accountChanged} />}
