@@ -32,6 +32,7 @@ function registerIpc(service: OrganizerService, accounts: AccountManager) {
   ipcMain.handle('deleteCleanupRule', (_e, id: string) => service.deleteCleanupRule(id))
   ipcMain.handle('previewCleanup', (_e, id: string) => service.previewCleanup(id))
   ipcMain.handle('applyCleanup', (_e, id: string, expected: number, confirmation?: string) => service.applyCleanup(id, expected, confirmation))
+  ipcMain.handle('senders', () => service.senders())
   ipcMain.handle('senderSummary', (_e, email: string) => service.senderSummary(email))
   ipcMain.handle('cleanSender', (_e, email: string, action: SenderAction, expected: number) => service.cleanSender(email, action, expected))
   ipcMain.handle('openInGmail', async (_e, email: string) => {

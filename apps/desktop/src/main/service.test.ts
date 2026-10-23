@@ -656,3 +656,30 @@ describe('one sender at a time', () => {
     await expect(service.cleanSender('not an address', 'trash', 10)).rejects.toThrow(/valid sender/)
   })
 })
+
+describe('senders list', () => {
+  it('lists every sender in the scanned mail and says how much of the inbox that covers', async () => {
+    const provider = new CountingProvider(300)
+    const service = new OrganizerService(() => provider, new FakeStore() as unknown as Store, () => {}, { sampleSize: 100 })
+    const partial = await service.senders()
+    expect(partial).toMatchObject({ scanned: 100, inboxTotal: 300, complete: false, scanning: false })
+    expect(partial.senders.reduce((n, s) => n + s.count, 0)).toBe(100)
+
+    service.scanFullInbox()
+    const full = await service.senders()
+    expect(full).toMatchObject({ scanned: 300, complete: true })
+    expect(full.senders.reduce((n, s) => n + s.count, 0)).toBe(300)
+    expect(full.senders.map((s) => s.count)).toEqual([...full.senders.map((s) => s.count)].sort((a, b) => b - a))
+  })
+
+  it('reflects a clean-up straight away', async () => {
+    const provider = new CountingProvider(300)
+    const service = new OrganizerService(() => provider, new FakeStore() as unknown as Store)
+    const before = (await service.senders()).senders.find((s) => s.email === 'deals@shopmart.example')!
+    const { counts } = await service.senderSummary('deals@shopmart.example')
+    await service.cleanSender('deals@shopmart.example', 'archive', counts.archive)
+    const after = await service.senders()
+    expect(before.count).toBe(counts.archive)
+    expect(after.senders.find((s) => s.email === 'deals@shopmart.example')).toBeUndefined()
+  })
+})

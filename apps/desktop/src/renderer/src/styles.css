@@ -274,3 +274,21 @@ tr.detail > td { padding: 0 6px 14px; background: color-mix(in srgb, var(--accen
 
 .grid:has(> .card.wide) > .card { grid-column: 1 / -1; }
 .grid > .card.wide { order: -1; } /* an open sender goes first, so its options are in view */
+
+/* ---- Senders page ---- */
+.filters { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px 16px; margin-bottom: 14px; }
+.filters label:not(.inline) { display: grid; gap: 4px; color: var(--muted); font-weight: 500; font-size: 12px; }
+.filters .filter-search { flex: 1 1 240px; }
+.filters .filter-search input { width: 100%; }
+.filters label.inline { margin: 0 0 6px; }
+.tally { margin: 0 0 6px; }
+.tally b { color: var(--text); font-weight: 600; }
+table.senders th.date, table.senders td.date { width: 84px; white-space: nowrap; }
+table.fixed.senders th.num { width: 96px; }
+.count-cell { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+.mini-bar { display: block; height: 3px; border-radius: 2px; background: linear-gradient(90deg, hsl(245 80% 64%), hsl(300 75% 66%)); max-width: 100%; opacity: .55; }
+.sender-toggle .pill { flex: none; margin-left: 4px; }
+.sender-toggle .sender { flex: 1; }
+.show-more { display: flex; gap: 8px; justify-content: center; padding-top: 14px; }
+.empty { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 28px 12px; text-align: center; }
+@media (max-width: 760px) { table.senders th.date, table.senders td.date, table.senders .pill { display: none; } }

@@ -25,6 +25,7 @@ const api: OrganizerApi = {
   deleteCleanupRule: call('deleteCleanupRule') as OrganizerApi['deleteCleanupRule'],
   previewCleanup: call('previewCleanup') as OrganizerApi['previewCleanup'],
   applyCleanup: call('applyCleanup') as OrganizerApi['applyCleanup'],
+  senders: call('senders') as OrganizerApi['senders'],
   senderSummary: call('senderSummary') as OrganizerApi['senderSummary'],
   cleanSender: call('cleanSender') as OrganizerApi['cleanSender'],
   openInGmail: call('openInGmail') as OrganizerApi['openInGmail'],

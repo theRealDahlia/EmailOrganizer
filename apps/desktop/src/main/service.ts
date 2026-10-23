@@ -1,8 +1,8 @@
 import {
-  StorageScopeError, applyActionsToMessage, buildOverview, buildQuery, isBroadTrash, reverseCleanupActions, validateCleanup, buildSubscriptions, categorize, inverseActions, parseListUnsubscribe, planChanges, validateRule,
+  StorageScopeError, applyActionsToMessage, buildOverview, buildQuery, buildSenders, isBroadTrash, reverseCleanupActions, validateCleanup, buildSubscriptions, categorize, inverseActions, parseListUnsubscribe, planChanges, validateRule,
   type CleanupFilters, type CleanupRule, type InboxCounts, type MailAction, type MailMessage, type MailProvider, type Rule, type Subscription, type UnsubscribeTargets,
 } from '@organizer/core'
-import type { ActivityEntry, CleanupPreview, OverviewResult, PreviewResult, ScanProgress, SenderAction, SenderSummary, StorageResult } from '../shared'
+import type { ActivityEntry, CleanupPreview, OverviewResult, PreviewResult, ScanProgress, SenderAction, SenderSummary, SendersResult, StorageResult } from '../shared'
 import type { Store, UndoStep } from './db'
 
 /** New messages are downloaded and saved in chunks of this size, so progress survives a stop or crash. */
@@ -312,15 +312,26 @@ export class OrganizerService {
     return { provider, messages: view, inboxTotal: ids.length, complete: !signal.aborted && leftOut === 0 }
   }
 
-  async overview(refresh = false): Promise<OverviewResult> {
-    if (refresh) this.invalidate()
-    const v = await this.current()
+  /** How much of the inbox the current view covers, and how long the rest would take. */
+  private coverage(v: { messages: MailMessage[]; inboxTotal: number; complete: boolean; scanning: boolean }) {
     const pace = this.getProvider().fetchesPerMinute
     const remaining = v.inboxTotal - v.messages.length
     return {
-      ...buildOverview(v.messages), inboxTotal: v.inboxTotal, complete: v.complete, scanning: v.scanning,
+      inboxTotal: v.inboxTotal, complete: v.complete, scanning: v.scanning,
       fullScanMinutes: pace && remaining > 0 ? Math.ceil(remaining / pace) : undefined,
     }
+  }
+
+  async overview(refresh = false): Promise<OverviewResult> {
+    if (refresh) this.invalidate()
+    const v = await this.current()
+    return { ...buildOverview(v.messages), ...this.coverage(v) }
+  }
+
+  /** Every sender in the mail scanned so far (the newest sample, or the whole inbox after a full scan). */
+  async senders(): Promise<SendersResult> {
+    const v = await this.current()
+    return { senders: buildSenders(v.messages), scanned: v.messages.length, ...this.coverage(v) }
   }
 
   /** Reflect a change in the loaded views, dropping messages that left the inbox. */

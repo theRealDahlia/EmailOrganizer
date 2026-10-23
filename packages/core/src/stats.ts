@@ -7,6 +7,8 @@ export interface SenderStat {
   unread: number
   bytes: number
   hasUnsubscribe: boolean
+  /** date of the newest message from this sender (ISO 8601) */
+  lastDate: string
 }
 
 export interface Overview {
@@ -20,7 +22,7 @@ export interface Overview {
   subscriptionCount: number
 }
 
-export function buildOverview(messages: MailMessage[], topN = 10): Overview {
+function tally(messages: MailMessage[]) {
   const senders = new Map<string, SenderStat>()
   const byCategory: Record<string, number> = {}
   let unread = 0
@@ -32,15 +34,25 @@ export function buildOverview(messages: MailMessage[], topN = 10): Overview {
 
     const key = m.from.email.toLowerCase()
     const s = senders.get(key) ?? {
-      email: key, name: m.from.name, count: 0, unread: 0, bytes: 0, hasUnsubscribe: false,
+      email: key, name: m.from.name, count: 0, unread: 0, bytes: 0, hasUnsubscribe: false, lastDate: m.date,
     }
     s.count++
     s.bytes += m.sizeBytes
     if (m.isUnread) s.unread++
     if (m.listUnsubscribe) s.hasUnsubscribe = true
+    if (m.date > s.lastDate) { s.lastDate = m.date; s.name = m.from.name || s.name } // the newest message has the name they use now
     senders.set(key, s)
   }
+  return { senders, byCategory, unread }
+}
 
+/** Every sender in `messages`, busiest first. */
+export function buildSenders(messages: MailMessage[]): SenderStat[] {
+  return [...tally(messages).senders.values()].sort((a, b) => b.count - a.count || a.email.localeCompare(b.email))
+}
+
+export function buildOverview(messages: MailMessage[], topN = 10): Overview {
+  const { senders, byCategory, unread } = tally(messages)
   const all = [...senders.values()].sort((a, b) => b.count - a.count)
   const subscriptions = all.filter((s) => s.hasUnsubscribe)
   return {

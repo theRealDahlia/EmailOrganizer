@@ -10,11 +10,13 @@ import { SubscriptionsTab } from './SubscriptionsTab'
 import { Avatar, Icon, PAGE_HUE, categoryHue, hue } from './Icons'
 import { CountUp } from './Motion'
 import { SenderPanel } from './SenderPanel'
+import { SendersTab } from './SendersTab'
 
-type Tab = 'overview' | 'cleanup' | 'subscriptions' | 'rules' | 'activity' | 'accounts'
-const TABS: Tab[] = ['overview', 'cleanup', 'subscriptions', 'rules', 'activity', 'accounts']
+type Tab = 'overview' | 'senders' | 'cleanup' | 'subscriptions' | 'rules' | 'activity' | 'accounts'
+const TABS: Tab[] = ['overview', 'senders', 'cleanup', 'subscriptions', 'rules', 'activity', 'accounts']
 const PAGES: Record<Tab, { title: string; blurb: string }> = {
   overview: { title: 'Overview', blurb: 'What’s filling your inbox, and who it’s from.' },
+  senders: { title: 'Senders', blurb: 'Everyone who emails you, and how often.' },
   cleanup: { title: 'Cleanup', blurb: 'Find old, large or noisy mail and clear it in one go.' },
   subscriptions: { title: 'Subscriptions', blurb: 'Newsletters and senders you can unsubscribe from.' },
   rules: { title: 'Rules', blurb: 'Keep your inbox tidy automatically.' },
@@ -418,6 +420,8 @@ export function App() {
           {tab === 'overview' && <OverviewTab overview={overview} error={overviewError} progress={progress} onRescan={() => refresh(true)} onCancel={() => { api.cancelScan() }}
             onScanAll={() => { api.scanFullInbox().then(() => refresh()) }}
             onChanged={() => refresh()} onOpenCleanup={openCleanupFor} onGoToRules={() => setTab('rules')} />}
+          {tab === 'senders' && <SendersTab scanKey={`${overview?.total}:${overview?.scanning}:${overview?.complete}`} progress={progress} onCancel={() => { api.cancelScan() }}
+            onScanAll={() => { api.scanFullInbox().then(() => refresh()) }} onChanged={() => refresh()} onOpenCleanup={openCleanupFor} onGoToRules={() => setTab('rules')} />}
           {tab === 'cleanup' && <CleanupTab onApplied={() => refresh()} prefill={prefill} onPrefillUsed={() => setPrefill(null)} />}
           {tab === 'subscriptions' && <SubscriptionsTab scan={overview} onGoToRules={() => setTab('rules')} onChanged={() => refresh()} onOpenCleanup={openCleanupFor} />}
           {tab === 'rules' && <RulesTab onApplied={() => refresh()} scanning={scanning} />}

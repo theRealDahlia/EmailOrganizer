@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { inverseActions, buildSubscriptions, isPublicHttpsUrl, parseListUnsubscribe, validateRule, type MailMessage, type Rule } from './index'
+import { inverseActions, buildOverview, buildSenders, buildSubscriptions, isPublicHttpsUrl, parseListUnsubscribe, validateRule, type MailMessage, type Rule } from './index'
 
 const rule = (over: Partial<Rule> = {}): Rule => ({
   id: 'r', name: 'Test', enabled: true, match: 'all',
@@ -78,5 +78,31 @@ describe('buildSubscriptions', () => {
     expect(subs).toHaveLength(1)
     expect(subs[0]).toMatchObject({ email: 'news@s.com', count: 3, unread: 2, listUnsubscribe: '<https://s.com/new>' })
     expect(subs[0].readRate).toBeCloseTo(1 / 3)
+  })
+})
+
+describe('buildSenders', () => {
+  const msg = (id: string, email: string, name: string, date: string, unread = false): MailMessage => ({
+    id, accountId: 'a', from: { name, email }, subject: 's', date, labels: ['INBOX'], isUnread: unread, sizeBytes: 10,
+  })
+
+  it('lists every sender with counts, busiest first, ignoring address case', () => {
+    const senders = buildSenders([
+      msg('1', 'A@x.com', 'Old Name', '2026-01-01T00:00:00Z', true),
+      msg('2', 'b@x.com', 'B', '2026-02-01T00:00:00Z'),
+      msg('3', 'a@x.com', 'New Name', '2026-03-01T00:00:00Z'),
+    ])
+    expect(senders.map((s) => [s.email, s.count, s.unread])).toEqual([['a@x.com', 2, 1], ['b@x.com', 1, 0]])
+  })
+
+  it('reports the newest message date and the name from it', () => {
+    const [a] = buildSenders([msg('1', 'a@x.com', 'Old Name', '2026-01-01T00:00:00Z'), msg('2', 'a@x.com', 'New Name', '2026-03-01T00:00:00Z'), msg('3', 'a@x.com', 'Mid', '2026-02-01T00:00:00Z')])
+    expect(a).toMatchObject({ lastDate: '2026-03-01T00:00:00Z', name: 'New Name' })
+  })
+
+  it('has no limit, unlike the overview', () => {
+    const many = Array.from({ length: 40 }, (_, i) => msg(String(i), `s${i}@x.com`, `S${i}`, '2026-01-01T00:00:00Z'))
+    expect(buildSenders(many)).toHaveLength(40)
+    expect(buildOverview(many).topSenders).toHaveLength(10)
   })
 })

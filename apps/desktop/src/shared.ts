@@ -1,4 +1,4 @@
-import type { CleanupRule, InboxCounts, MailMessage, Overview, PlannedChange, Rule, StorageQuota, Subscription } from '@organizer/core'
+import type { CleanupRule, InboxCounts, MailMessage, Overview, PlannedChange, Rule, SenderStat, StorageQuota, Subscription } from '@organizer/core'
 
 export interface ActivityEntry {
   id: number
@@ -60,6 +60,19 @@ export interface CleanupPreview {
   sampled: number
 }
 
+/** Every sender found in the scanned mail, with how much of the inbox that covers. */
+export interface SendersResult {
+  senders: SenderStat[]
+  /** inbox messages the counts are based on */
+  scanned: number
+  inboxTotal: number
+  /** every inbox message has been scanned, so the counts are exact */
+  complete: boolean
+  scanning: boolean
+  /** about how long downloading the rest of the inbox would take */
+  fullScanMinutes?: number
+}
+
 /** One-click clean-ups for everything a single sender has in the inbox. */
 export type SenderAction = 'archive' | 'markRead' | 'trash' | 'trashOlder'
 
@@ -119,6 +132,8 @@ export interface OrganizerApi {
   previewCleanup(ruleId: string): Promise<CleanupPreview>
   /** Runs the rule on whatever Gmail finds now, unless far more matches than `expectedCount` appeared. */
   applyCleanup(ruleId: string, expectedCount: number, confirmation?: string): Promise<ActivityEntry>
+  /** Every sender in the scanned mail, busiest first, for the Senders page. */
+  senders(): Promise<SendersResult>
   /** What each one-click clean-up would change for this sender; found by Gmail search, no scan needed. */
   senderSummary(email: string): Promise<SenderSummary>
   /** Runs one of those clean-ups (undoable from Activity). Refuses if far more matches than `expectedCount` appeared. */

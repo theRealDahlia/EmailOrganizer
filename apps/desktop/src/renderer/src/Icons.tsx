@@ -7,6 +7,7 @@ const paths: Record<string, ReactNode> = {
   rules: <><path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0" /><circle cx="16" cy="6" r="2" /><circle cx="10" cy="12" r="2" /><circle cx="18" cy="18" r="2" /></>,
   activity: <><path d="M3 12h4l3-8 4 16 3-8h4" /></>,
   accounts: <><circle cx="12" cy="8" r="4" /><path d="M4 21c1-4 4-6 8-6s7 2 8 6" /></>,
+  senders: <><circle cx="9" cy="8" r="3.5" /><path d="M2.5 20c.8-3.6 3.2-5.5 6.5-5.5s5.7 1.9 6.5 5.5" /><path d="M16 4.8a3.5 3.5 0 0 1 0 6.4" /><path d="M18 14.8c1.8.7 3.1 2.4 3.5 5.2" /></>,
   inbox: <><path d="M3 13l3-8h12l3 8v6a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1z" /><path d="M3 13h5l1 3h6l1-3h5" /></>,
   unread: <><path d="M21 12v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h9" /><path d="m3 8 9 6 4-2.7" /><circle cx="19" cy="6" r="3" /></>,
   check: <><path d="m4 12 5 5L20 6" /></>,
@@ -20,7 +21,7 @@ const paths: Record<string, ReactNode> = {
 }
 
 /** One hue per page, used for its sidebar icon. */
-export const PAGE_HUE: Record<string, number> = { overview: 245, cleanup: 12, subscriptions: 330, rules: 270, activity: 155, accounts: 200 }
+export const PAGE_HUE: Record<string, number> = { overview: 245, senders: 215, cleanup: 12, subscriptions: 330, rules: 270, activity: 155, accounts: 200 }
 
 const CATEGORY_HUE: Record<string, number> = { personal: 245, newsletter: 270, promotion: 330, social: 200, receipt: 155, finance: 175, travel: 35 }
 export const categoryHue = (name: string) => CATEGORY_HUE[name.toLowerCase()] ?? [...name].reduce((h, c) => (h * 31 + c.charCodeAt(0)) % 360, 0)
