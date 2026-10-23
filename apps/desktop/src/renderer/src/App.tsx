@@ -7,8 +7,18 @@ import { formatBytes } from './format'
 import { CoverageNote, ScanStatus } from './ScanStatus'
 import { StorageMeter } from './StorageMeter'
 import { SubscriptionsTab } from './SubscriptionsTab'
+import { Avatar, Icon, PAGE_HUE, categoryHue, hue } from './Icons'
 
 type Tab = 'overview' | 'cleanup' | 'subscriptions' | 'rules' | 'activity' | 'accounts'
+const TABS: Tab[] = ['overview', 'cleanup', 'subscriptions', 'rules', 'activity', 'accounts']
+const PAGES: Record<Tab, { title: string; blurb: string }> = {
+  overview: { title: 'Overview', blurb: 'What’s filling your inbox, and who it’s from.' },
+  cleanup: { title: 'Cleanup', blurb: 'Find old, large or noisy mail and clear it in one go.' },
+  subscriptions: { title: 'Subscriptions', blurb: 'Newsletters and senders you can unsubscribe from.' },
+  rules: { title: 'Rules', blurb: 'Keep your inbox tidy automatically.' },
+  activity: { title: 'Activity', blurb: 'Everything the app has changed. Undo any of it.' },
+  accounts: { title: 'Account', blurb: 'Connect Gmail to organize your real inbox.' },
+}
 const api = window.organizer
 
 const trashes = (rule: Rule) => rule.actions.some((a) => a.type === 'trash')
@@ -45,31 +55,40 @@ function OverviewTab({ overview, error, progress, onRescan, onCancel }: {
         </div>
       )}
       <div className="stats">
-        <div className="card stat">
+        <div className="card stat" style={hue(245)}>
+          <span className="tile"><Icon name="inbox" /></span>
           <b>{overview.total.toLocaleString()}</b>
           <span>{overview.complete && !overview.scanning ? 'messages in inbox' : `of ${overview.inboxTotal.toLocaleString()} scanned`}</span>
         </div>
-        <div className="card stat"><b>{overview.unread.toLocaleString()}</b><span>unread</span></div>
-        <div className="card stat"><b>{overview.subscriptions.length}</b><span>subscriptions</span></div>
-        {overview.complete && !overview.scanning && <div className="actions" style={{ alignSelf: 'flex-start' }}><button className="btn" onClick={onRescan}>Rescan</button></div>}
+        <div className="card stat" style={hue(28)}>
+          <span className="tile"><Icon name="unread" /></span>
+          <b>{overview.unread.toLocaleString()}</b><span>unread</span>
+        </div>
+        <div className="card stat" style={hue(330)}>
+          <span className="tile"><Icon name="subscriptions" /></span>
+          <b>{overview.subscriptions.length}</b><span>subscriptions</span>
+        </div>
       </div>
       <div className="grid">
         <section className="card">
           <h2>Categories</h2>
           {cats.map(([name, n]) => (
-            <div key={name} style={{ marginBottom: 10 }}>
-              <div className="row" style={{ padding: 0, border: 0 }}><span>{name}</span><span className="muted">{n.toLocaleString()}</span></div>
+            <div key={name} className="cat-row" style={hue(categoryHue(name))}>
+              <div className="cat-top"><span className="cat-name">{name[0].toUpperCase() + name.slice(1)}</span><span className="muted">{n.toLocaleString()}</span></div>
               <div className="bar"><i style={{ width: `${(n / overview.total) * 100}%` }} /></div>
             </div>
           ))}
         </section>
         <section className="card">
           <h2>Top senders</h2>
-          <table>
+          <table className="fixed">
             <thead><tr><th>Sender</th><th className="num">Count</th><th className="num">Unread</th></tr></thead>
             <tbody>
               {overview.topSenders.map((s) => (
-                <tr key={s.email}><td>{s.name}<div className="muted">{s.email}</div></td><td className="num">{s.count.toLocaleString()}</td><td className="num">{s.unread.toLocaleString()}</td></tr>
+                <tr key={s.email}>
+                  <td><div className="sender"><Avatar name={s.name || s.email} /><div>{s.name}<div className="muted">{s.email}</div></div></div></td>
+                  <td className="num">{s.count.toLocaleString()}</td><td className="num">{s.unread > 0 ? <span className="count-chip" style={hue(28)}>{s.unread.toLocaleString()}</span> : <span className="muted">0</span>}</td>
+                </tr>
               ))}
             </tbody>
           </table>
@@ -180,7 +199,10 @@ function ActivityTab({ onUndone }: { onUndone: () => void }) {
       {items.length === 0 && <p className="muted">Nothing yet. Changes you apply will appear here, and can be undone.</p>}
       {items.map((a) => (
         <div className="row" key={a.id}>
-          <div><b>{a.ruleName}</b> · {a.messageCount} messages<div className="muted">{new Date(a.at).toLocaleString()}</div></div>
+          <div className="sender">
+            <span className="tile soft" style={hue(a.undone ? 220 : 155)}><Icon name={a.undone ? 'activity' : 'archive'} size={17} /></span>
+            <div><b>{a.ruleName}</b> · {a.messageCount.toLocaleString()} messages<div className="muted">{new Date(a.at).toLocaleString()}</div></div>
+          </div>
           {a.undone ? <span className="muted">Undone</span>
             : <button className="btn" onClick={async () => { await api.undo(a.id); await load(); onUndone() }}>Undo</button>}
         </div>
@@ -278,26 +300,42 @@ export function App() {
   }, [scanning, refresh])
 
 
+  const account = status?.mode === 'gmail' ? status.email ?? 'Gmail' : 'Demo mailbox'
+  const head = PAGES[tab]
+
   return (
-    <div className="app">
-      <header>
-        <h1>Email Organizer</h1>
-        <span className="badge">
-          {status?.mode === 'gmail' ? status.email : 'Demo mailbox'} · everything stays on this computer
-        </span>
-      </header>
-      <nav role="tablist">
-        {(['overview', 'cleanup', 'subscriptions', 'rules', 'activity', 'accounts'] as Tab[]).map((t) => (
-          <button key={t} role="tab" aria-selected={tab === t} onClick={() => setTab(t)}>{t[0].toUpperCase() + t.slice(1)}</button>
-        ))}
-      </nav>
-      {tab === 'overview' && <OverviewTab overview={overview} error={overviewError} progress={progress} onRescan={() => refresh(true)} onCancel={() => { api.cancelScan() }} />}
-      {tab === 'cleanup' && <CleanupTab onApplied={() => refresh()} />}
-      {tab === 'subscriptions' && <SubscriptionsTab scan={overview} onGoToRules={() => setTab('rules')} />}
-      {tab === 'rules' && <RulesTab onApplied={() => refresh()} scanning={scanning} />}
-      {tab === 'activity' && <ActivityTab onUndone={() => refresh()} />}
-      {tab === 'accounts' && <AccountsTab status={status} onChanged={accountChanged} />}
-      <StorageMeter refreshKey={`${status?.mode}:${status?.email}:${overview?.total}`} onReconnect={() => setTab('accounts')} />
+    <div className="shell">
+      <aside className="sidebar">
+        <div className="brand"><span className="brand-mark"><Icon name="subscriptions" size={16} /></span>Email Organizer</div>
+        <nav role="tablist" aria-orientation="vertical">
+          {TABS.map((t) => (
+            <button key={t} role="tab" className="nav-item" aria-selected={tab === t} onClick={() => setTab(t)}>
+              <span className="nav-ico" style={hue(PAGE_HUE[t])}><Icon name={t} size={16} /></span>{PAGES[t].title}
+            </button>
+          ))}
+        </nav>
+        <div className="sidebar-foot">
+          <StorageMeter refreshKey={`${status?.mode}:${status?.email}:${overview?.total}`} onReconnect={() => setTab('accounts')} />
+          <button className="account-chip nav-item" onClick={() => setTab('accounts')} title="Manage account">
+            <Avatar name={account} />
+            <span style={{ minWidth: 0 }}><b>{account}</b><small>Stays on this computer</small></span>
+          </button>
+        </div>
+      </aside>
+      <main className="main">
+        <div className="content">
+          <div className="page-head">
+            <div><h1>{head.title}</h1><p>{head.blurb}</p></div>
+            {tab === 'overview' && overview?.complete && !overview.scanning && <button className="btn" onClick={() => refresh(true)}>Rescan inbox</button>}
+          </div>
+          {tab === 'overview' && <OverviewTab overview={overview} error={overviewError} progress={progress} onRescan={() => refresh(true)} onCancel={() => { api.cancelScan() }} />}
+          {tab === 'cleanup' && <CleanupTab onApplied={() => refresh()} />}
+          {tab === 'subscriptions' && <SubscriptionsTab scan={overview} onGoToRules={() => setTab('rules')} />}
+          {tab === 'rules' && <RulesTab onApplied={() => refresh()} scanning={scanning} />}
+          {tab === 'activity' && <ActivityTab onUndone={() => refresh()} />}
+          {tab === 'accounts' && <AccountsTab status={status} onChanged={accountChanged} />}
+        </div>
+      </main>
     </div>
   )
 }

@@ -5,6 +5,9 @@ import {
 } from '@organizer/core'
 import type { CleanupPreview } from '../../shared'
 import { formatBytes } from './format'
+import { Icon, hue } from './Icons'
+
+const IDEA_HUES = [330, 200, 12, 155]
 
 const api = window.organizer
 const errorText = (e: unknown) => (e instanceof Error ? e.message.replace(/^Error invoking remote method '[^']+': (Error: )?/, '') : String(e))
@@ -242,10 +245,11 @@ export function CleanupTab({ onApplied }: { onApplied: () => void }) {
       <section style={{ marginTop: 24 }}>
         <h2>Ideas to start from</h2>
         <div className="grid">
-          {CLEANUP_PRESETS.map((p) => (
-            <div className="card" key={p.name}>
+          {CLEANUP_PRESETS.map((p, i) => (
+            <div className="card idea" key={p.name} style={hue(IDEA_HUES[i % IDEA_HUES.length])}>
+              <span className="tile soft"><Icon name={p.actions.some((a) => a.type === 'trash') ? 'cleanup' : 'archive'} size={17} /></span>
               <b>{p.name}</b>
-              <p className="muted" style={{ margin: '4px 0 12px' }}>{p.blurb}</p>
+              <p className="muted">{p.blurb}</p>
               <button className="btn" disabled={!!editing} onClick={() => { setDone(null); setEditing({ id: crypto.randomUUID(), name: p.name, filters: p.filters, actions: p.actions }) }}>Use this</button>
             </div>
           ))}

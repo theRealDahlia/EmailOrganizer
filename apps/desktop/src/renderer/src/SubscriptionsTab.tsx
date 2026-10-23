@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { parseListUnsubscribe, type Subscription } from '@organizer/core'
 import type { OverviewResult } from '../../shared'
 import { CoverageNote } from './ScanStatus'
+import { Avatar } from './Icons'
 
 const api = window.organizer
 
@@ -40,12 +41,15 @@ export function SubscriptionsTab({ scan, onGoToRules }: { scan: OverviewResult |
           const t = parseListUnsubscribe(s.listUnsubscribe)
           return (
             <div className="row" key={s.email}>
-              <div>
+              <div className="sender">
+                <Avatar name={s.name || s.email} />
+                <div>
                 <b>{s.name}</b> <span className="muted">{s.email}</span>
                 <div className="muted">
-                  {s.count} emails · {Math.round(s.readRate * 100)}% read · last {new Date(s.lastDate).toLocaleDateString()}
+                  {s.count} emails · {Math.round(s.readRate * 100)}% read{s.readRate < 0.2 && <> <span className="pill warn">rarely read</span></>} · last {new Date(s.lastDate).toLocaleDateString()}
                 </div>
                 {done[s.email] && <div style={{ color: 'var(--ok)' }}>{done[s.email]}</div>}
+                </div>
               </div>
               <div className="actions">
                 {s.oneClick && t.https && (confirming === s.email
