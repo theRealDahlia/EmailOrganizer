@@ -1,10 +1,12 @@
 import {
-  StorageScopeError, applyActionsToMessage, buildOverview, buildQuery, buildSenders, isBroadTrash, reverseCleanupActions, validateCleanup, buildSubscriptions, categorize, inverseActions, parseListUnsubscribe, planChanges, validateRule,
+  StorageScopeError, applyActionsToMessage, buildOverview, buildQuery, buildSenders, findDuplicates, isBroadTrash, mailMove, reverseCleanupActions, validateCleanup, buildSubscriptions, categorize, inverseActions, parseListUnsubscribe, planChanges, validateRule,
   type CleanupFilters, type CleanupRule, type InboxCounts, type MailAction, type MailMessage, type MailProvider, type Rule, type Subscription, type UnsubscribeTargets,
 } from '@organizer/core'
 import { AUTO_TRASH_LIMIT } from '../shared'
 import type { ActivityEntry, CleanupPreview, OverviewResult, PreviewResult, AutomationStatus, ScanProgress, SenderAction, SenderSummary, SendersResult, StorageResult } from '../shared'
 import type { Store, UndoStep } from './db'
+import { randomUUID } from 'node:crypto'
+import type { DuplicatesResult, ImportResult, RulesExport, ImpactSummary, ImpactTotals, SpaceCandidate, SpaceGuide, Suggestion, SuggestionsResult, UnsubscribeRecord } from '../shared'
 
 /** New messages are downloaded and saved in chunks of this size, so progress survives a stop or crash. */
 const FETCH_CHUNK = 50
@@ -21,6 +23,39 @@ const FULL_RELIST_AFTER_MS = 6 * 24 * 3_600_000
 export const SAMPLE_SIZE = 2_000
 /** How often automatic rules and cleanups run while the app is open. */
 export const AUTO_INTERVAL_MS = 30 * 60_000
+/** The most rules of each kind one import will read. */
+const IMPORT_LIMIT = 200
+/** A sender needs at least this much mail before it's worth a suggestion. */
+const SUGGESTION_MIN_MAIL = 8
+/** Things the "Free up space" guide looks for. All inbox mail, and all moved to Trash (archiving frees nothing). */
+const SPACE_CANDIDATES: { id: string; title: string; blurb: string; filters: CleanupFilters }[] = [
+  { id: 'attachments-25', title: 'Attachments over 25 MB', blurb: 'The biggest single messages in your inbox.', filters: { largerThanMB: 25, keepStarred: true } },
+  { id: 'attachments-10', title: 'Attachments of 10 to 25 MB', blurb: 'Large files that were probably saved elsewhere already.', filters: { largerThanMB: 10, extra: '-larger:25M', keepStarred: true } },
+  { id: 'attachments-5', title: 'Attachments of 5 to 10 MB', blurb: 'Photos, PDFs and presentations adding up.', filters: { largerThanMB: 5, extra: '-larger:10M', keepStarred: true } },
+  { id: 'promotions-old', title: 'Promotions older than a year', blurb: 'Sales and offers that have long expired.', filters: { category: 'promotions', olderThan: { value: 1, unit: 'y' }, keepStarred: true } },
+  { id: 'social-old', title: 'Social notifications older than 3 months', blurb: 'Likes, follows and tags nobody needs again.', filters: { category: 'social', olderThan: { value: 3, unit: 'm' }, keepStarred: true } },
+  { id: 'updates-old', title: 'Updates older than 2 years', blurb: 'Old confirmations and notices.', filters: { category: 'updates', olderThan: { value: 2, unit: 'y' }, keepStarred: true } },
+]
+/** How many matches of each candidate are downloaded to work out their size (20 quota units each). */
+const SPACE_SAMPLE = 8
+/** How long to wait after an unsubscribe before checking whether the sender stopped (senders have a few days to act). */
+export const UNSUBSCRIBE_GRACE_MS = 7 * 86_400_000
+/** A plain sentence about what a run did, like "Archived 212 messages and moved 30 to Trash"; empty when it did nothing. */
+export function describeRun(entries: ActivityEntry[]): string {
+  const total = (move: ActivityEntry['move'] | 'other') => entries.filter((e) => (move === 'other' ? !e.move : e.move === move)).reduce((n, e) => n + e.messageCount, 0)
+  const archived = total('archive'), trashed = total('trash'), other = total('other')
+  const bits = [
+    archived && `archived ${archived.toLocaleString()} ${archived === 1 ? 'message' : 'messages'}`,
+    trashed && `moved ${trashed.toLocaleString()} to Trash`,
+    other && `updated ${other.toLocaleString()} ${other === 1 ? 'message' : 'messages'}`,
+  ].filter(Boolean) as string[]
+  if (bits.length === 0) return ''
+  const sentence = bits.length === 1 ? bits[0] : `${bits.slice(0, -1).join(', ')} and ${bits[bits.length - 1]}`
+  return sentence[0].toUpperCase() + sentence.slice(1)
+}
+
+/** Rules made on the fly (one sender, one space candidate) are never saved, so they have no id worth keeping. */
+const savedRuleId = (id: string) => (/^(sender|space)-/.test(id) ? undefined : id)
 
 
 interface ScanData {
@@ -75,7 +110,7 @@ export class OrganizerService {
   private sampleSize: number
   private onAutomatic: (status: AutomationStatus) => void
   private automating: Promise<AutomationStatus> | null = null
-  private auto: AutomationStatus = { lastRunAt: null, needsReview: [], errors: [], runs: 0 }
+  private auto: AutomationStatus = { lastRunAt: null, needsReview: [], errors: [], runs: 0, lastChanged: 0, lastSummary: '' }
 
   constructor(
     private getProvider: () => MailProvider,
@@ -509,7 +544,7 @@ export class OrganizerService {
     return { count: (await provider.searchInbox!(query)).length, query }
   }
 
-  private async runCleanup(rule: CleanupRule, provider: MailProvider, query: string, expectedCount: number, confirmation?: string): Promise<ActivityEntry> {
+  private async runCleanup(rule: CleanupRule, provider: MailProvider, query: string, expectedCount: number, confirmation?: string, automatic = false): Promise<ActivityEntry> {
     if (isBroadTrash(rule) && confirmation?.trim().toUpperCase() !== 'TRASH') {
       throw new Error('This rule can reach everyday mail. Type TRASH to confirm.')
     }
@@ -519,12 +554,28 @@ export class OrganizerService {
     }
     if (ids.length === 0) throw new Error('Nothing matches this rule right now.')
 
+    const trashed = rule.actions.some((a) => a.type === 'trash')
     await provider.applyActions(ids, rule.actions)
     const undo: UndoStep[] = [{ messageIds: ids, actions: reverseCleanupActions(rule.actions) }]
     this.updateCached(provider.accountId, ids, rule.actions)
     this.patchViews(ids, rule.actions)
     this.mailChanged()
-    return this.store.addActivity(rule.name, ids.length, undo)
+    return this.store.addActivity(rule.name, ids.length, undo, {
+      ruleId: savedRuleId(rule.id), bytes: trashed ? this.sizeOf(provider.accountId, ids) : 0, automatic, move: mailMove(rule.actions),
+    })
+  }
+
+  /**
+   * About how many bytes these messages take: exact for any whose size the app already knows (scanned mail), and the
+   * average of those for the rest. Nothing is downloaded to work it out, so mail the app has never seen counts as 0.
+   */
+  private sizeOf(accountId: string, ids: string[]): number {
+    const known = new Map<string, number>()
+    for (const m of (this.cache?.messages ?? this.stale?.messages ?? [])) known.set(m.id, m.sizeBytes)
+    if (accountId !== 'demo') for (const m of this.store.getMessages(accountId, ids)) known.set(m.id, m.sizeBytes)
+    let sum = 0, seen = 0
+    for (const id of ids) { const n = known.get(id); if (n !== undefined) { sum += n; seen++ } }
+    return seen === 0 ? 0 : Math.round(sum + (sum / seen) * (ids.length - seen))
   }
 
   // --- One sender at a time: the same search-based clean-up, aimed at everything from one address ---
@@ -583,21 +634,26 @@ export class OrganizerService {
   }
 
   /** Applies one rule to the given messages and records it. The caller decides when to rescan. */
-  private async applyRule(rule: Rule, messages: MailMessage[], activityName: string): Promise<ActivityEntry> {
+  private async applyRule(rule: Rule, messages: MailMessage[], activityName: string, automatic = false): Promise<ActivityEntry> {
+    const ids = planChanges([rule], messages).map((c) => c.messageId)
+    return this.commitToMessages(ids, rule.actions, messages, activityName, { ruleId: rule.id, automatic })
+  }
+
+  /** Applies the same actions to some scanned messages, records it, and keeps what the app knows in step. */
+  private async commitToMessages(ids: string[], actions: MailAction[], messages: MailMessage[], activityName: string, meta: { ruleId?: string; automatic?: boolean }): Promise<ActivityEntry> {
     const byId = new Map(messages.map((m) => [m.id, m]))
-    const changes = planChanges([rule], messages)
 
     // Group messages that need the same reversal, so undo is a few batched calls rather than one per message
     // (each batchModify call costs 50 quota units).
     const groups = new Map<string, UndoStep>()
-    for (const c of changes) {
-      const original = byId.get(c.messageId)!
-      const inverse = inverseActions(original, c.actions)
+    for (const id of ids) {
+      const original = byId.get(id)!
+      const inverse = inverseActions(original, actions)
       if (!inverse.length) continue
       const key = JSON.stringify(inverse)
       const g = groups.get(key) ?? { messageIds: [], actions: inverse }
-      g.messageIds.push(c.messageId)
-      if (!applyActionsToMessage(original, c.actions).labels.includes('INBOX')) {
+      g.messageIds.push(id)
+      if (!applyActionsToMessage(original, actions).labels.includes('INBOX')) {
         const { category: _category, ...stored } = original // the category is derived, not stored
         ;(g.restore ??= []).push(stored)
       }
@@ -605,11 +661,222 @@ export class OrganizerService {
     }
     const undo = [...groups.values()]
     const provider = this.getProvider()
-    const ids = changes.map((c) => c.messageId)
-    await provider.applyActions(ids, rule.actions)
-    this.updateCached(provider.accountId, ids, rule.actions)
-    this.patchViews(ids, rule.actions)
-    return this.store.addActivity(activityName, changes.length, undo)
+    await provider.applyActions(ids, actions)
+    this.updateCached(provider.accountId, ids, actions)
+    this.patchViews(ids, actions)
+    const bytes = actions.some((a) => a.type === 'trash') ? ids.reduce((n, id) => n + (byId.get(id)?.sizeBytes ?? 0), 0) : 0
+    return this.store.addActivity(activityName, ids.length, undo, { ...meta, bytes, move: mailMove(actions) })
+  }
+
+  // --- Duplicates ---
+
+  async duplicates(): Promise<DuplicatesResult> {
+    const v = await this.current()
+    const groups = findDuplicates(v.messages)
+    const extras = groups.flatMap((g) => g.extras)
+    return {
+      count: extras.length, bytes: extras.reduce((n, m) => n + m.sizeBytes, 0), groups: groups.length, scanned: v.messages.length, complete: v.complete,
+      examples: groups.sort((a, b) => b.extras.length - a.extras.length).slice(0, 3).map((g) => ({ from: g.keep.from.name || g.keep.from.email, subject: g.keep.subject, copies: g.extras.length + 1 })),
+    }
+  }
+
+  /** Moves the extra copies to Trash, keeping the newest of each. Works on the scanned mail, so it can't run during a scan. */
+  async trashDuplicates(expectedCount: number): Promise<ActivityEntry> {
+    this.requireNoScan()
+    const v = await this.current()
+    if (v.scanning) this.requireNoScan()
+    const ids = findDuplicates(v.messages).flatMap((g) => g.extras.map((m) => m.id))
+    if (ids.length === 0) throw new Error('No duplicates found right now.')
+    if (ids.length > expectedCount * 1.1 + 25) throw new Error(`More duplicates are listed now (${ids.length.toLocaleString()}) than you were shown (${expectedCount.toLocaleString()}). Look again before moving them.`)
+    const entry = await this.commitToMessages(ids, [{ type: 'trash' }], v.messages, 'Remove duplicate messages', {})
+    this.invalidate() // the next scan reconciles with Gmail; the patched view shows meanwhile
+    return entry
+  }
+
+  // --- Sharing rules ---
+
+  exportRules(): RulesExport {
+    return { app: 'email-organizer', version: 1, exportedAt: new Date().toISOString(), cleanupRules: this.store.listCleanupRules(), rules: this.store.listRules() }
+  }
+
+  /**
+   * Adds rules from an exported file. The file is untrusted, so each rule is checked like any the user types in, gets a
+   * new id, and loses anything that would let it act without the user: automatic runs, run-once, and the "include
+   * everyday mail" consent. Rules that fail the checks are skipped, with the reason.
+   */
+  importRules(data: unknown): ImportResult {
+    const file = data as Partial<RulesExport> | null
+    if (!file || typeof file !== 'object' || file.app !== 'email-organizer' || !Array.isArray(file.cleanupRules ?? []) || !Array.isArray(file.rules ?? [])) {
+      throw new Error('That isn’t a rules file from Email Organizer.')
+    }
+    const cleanups = (file.cleanupRules ?? []).slice(0, IMPORT_LIMIT)
+    const scanned = (file.rules ?? []).slice(0, IMPORT_LIMIT)
+    const result: ImportResult = { added: 0, skipped: [] }
+    const named = (r: unknown) => (r && typeof r === 'object' && typeof (r as { name?: unknown }).name === 'string' ? (r as { name: string }).name : 'Unnamed rule')
+
+    for (const raw of cleanups) {
+      try {
+        const r = raw as CleanupRule
+        if (!r || typeof r.filters !== 'object' || !Array.isArray(r.actions)) throw new Error('It isn’t a cleanup rule.')
+        const { auto: _a, runOnce: _o, allowBroad: _b, ...rest } = r
+        const rule: CleanupRule = { ...rest, id: randomUUID() }
+        const problems = validateCleanup(rule)
+        if (problems.length) throw new Error(problems[0])
+        this.store.saveCleanupRule(rule)
+        result.added++
+      } catch (e) { result.skipped.push({ name: named(raw), reason: e instanceof Error ? e.message : String(e) }) }
+    }
+    for (const raw of scanned) {
+      try {
+        const r = raw as Rule
+        if (!r || !Array.isArray(r.conditions) || !Array.isArray(r.actions)) throw new Error('It isn’t a rule.')
+        const { auto: _a, ...rest } = r
+        const rule: Rule = { ...rest, id: randomUUID() }
+        const problems = validateRule(rule)
+        if (problems.length) throw new Error(problems[0])
+        this.store.saveRule(rule)
+        result.added++
+      } catch (e) { result.skipped.push({ name: named(raw), reason: e instanceof Error ? e.message : String(e) }) }
+    }
+    return result
+  }
+
+  // --- Suggestions: senders the user barely reads ---
+
+  /**
+   * Senders with plenty of mail that is almost never opened: a newsletter read less than a fifth of the time, or anything
+   * else practically never. Each comes with its reason. Hidden once dismissed or once a cleanup for that sender exists.
+   */
+  async suggestions(): Promise<SuggestionsResult> {
+    const v = await this.current()
+    const dismissed = new Set(this.store.listDismissed())
+    const covered = new Set(this.store.listCleanupRules().map((r) => r.filters.from?.toLowerCase()).filter(Boolean))
+    const items: Suggestion[] = []
+    for (const s of buildSenders(v.messages)) {
+      if (s.count < SUGGESTION_MIN_MAIL || dismissed.has(`sender:${s.email}`) || covered.has(s.email)) continue
+      const read = s.count - s.unread
+      if (read / s.count > (s.hasUnsubscribe ? 0.2 : 0.05)) continue
+      const who = s.name || s.email
+      items.push({
+        id: `sender:${s.email}`, email: s.email, name: who, count: s.count, unread: s.unread, hasUnsubscribe: s.hasUnsubscribe, bytes: s.bytes,
+        why: (read === 0 ? `You haven’t opened any of their ${s.count.toLocaleString()} emails.` : `You’ve opened only ${read.toLocaleString()} of their ${s.count.toLocaleString()} emails.`)
+          + (s.hasUnsubscribe ? ' They offer an unsubscribe link.' : ''),
+      })
+    }
+    return { items: items.sort((a, b) => b.count - a.count).slice(0, 10), scanned: v.messages.length, inboxTotal: v.inboxTotal, complete: v.complete }
+  }
+
+  dismissSuggestion(id: string): void {
+    this.store.dismiss(id)
+  }
+
+  /** An automatic cleanup that archives one sender's mail: what "archive them from now on" means. */
+  autoArchiveSender(email: string): void {
+    const address = this.senderRule(email, 'archive').filters.from! // checks it's a real address
+    const id = `auto-archive-${address}`
+    if (this.store.listCleanupRules().some((r) => r.id === id)) return
+    this.saveCleanupRule({ id, name: `Archive mail from ${address}`, filters: { from: address }, actions: [{ type: 'archive' }], auto: true })
+  }
+
+  // --- Free up space ---
+
+  /** The account's storage, and what could be moved to Trash to free some. Cached until mail changes. */
+  spaceGuide(): Promise<SpaceGuide> {
+    return this.countOnce('space', (provider) => this.buildSpaceGuide(provider)) as Promise<SpaceGuide>
+  }
+
+  private async buildSpaceGuide(provider: MailProvider): Promise<SpaceGuide> {
+    if (!provider.searchInbox) throw new Error('Search-based cleanup isn’t available for this account.')
+    const quota = await provider.getStorageQuota?.().then((q) => ({ usedBytes: q.usedBytes, limitBytes: q.limitBytes }), () => null) ?? null
+    const found: SpaceCandidate[] = []
+    for (const def of SPACE_CANDIDATES) {
+      const ids = await provider.searchInbox(buildQuery(def.filters, [{ type: 'trash' }]))
+      if (ids.length === 0) continue
+      const n = Math.min(SPACE_SAMPLE, ids.length)
+      const sample = await provider.getMessages(Array.from({ length: n }, (_, i) => ids[Math.floor((i * ids.length) / n)]))
+      const total = sample.reduce((sum, m) => sum + m.sizeBytes, 0)
+      found.push({
+        id: def.id, title: def.title, blurb: def.blurb, count: ids.length,
+        bytes: sample.length === 0 ? 0 : ids.length <= SPACE_SAMPLE ? total : Math.round((total / sample.length) * ids.length),
+        bytesAreEstimate: ids.length > SPACE_SAMPLE,
+        samples: [...sample].sort((a, b) => b.sizeBytes - a.sizeBytes).slice(0, 3)
+          .map((m) => ({ from: m.from.name || m.from.email, subject: m.subject, date: m.date, sizeBytes: m.sizeBytes })),
+      })
+    }
+    return { quota, candidates: found.sort((a, b) => b.bytes - a.bytes) }
+  }
+
+  /** Moves one of the guide's candidates to Trash. The search is the app's own, never one the page supplies. */
+  async cleanSpace(id: string, expectedCount: number): Promise<ActivityEntry> {
+    const def = SPACE_CANDIDATES.find((c) => c.id === id)
+    if (!def) throw new Error('That isn’t something the guide suggested.')
+    const provider = this.requireSearch()
+    const rule: CleanupRule = { id: `space-${id}`, name: `Free up space: ${def.title}`, filters: def.filters, actions: [{ type: 'trash' }] }
+    return this.runCleanup(rule, provider, buildQuery(rule.filters, rule.actions), expectedCount)
+  }
+
+  // --- Impact: what the app has done for the user ---
+
+  /** This month's and all-time totals, and each rule's lifetime count. Undone changes don't count. */
+  impact(): ImpactSummary {
+    const now = new Date()
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString()
+    const done = this.store.activitySince().filter((a) => !a.undone)
+    const unsubscribes = this.store.listUnsubscribes()
+    const totals = (rows: typeof done, since?: string): ImpactTotals => ({
+      messages: rows.reduce((n, a) => n + a.messageCount, 0),
+      bytesTrashed: rows.reduce((n, a) => n + (a.bytes ?? 0), 0),
+      trashed: rows.filter((a) => a.move === 'trash').reduce((n, a) => n + a.messageCount, 0),
+      archived: rows.filter((a) => a.move === 'archive').reduce((n, a) => n + a.messageCount, 0),
+      automatic: rows.filter((a) => a.automatic).reduce((n, a) => n + a.messageCount, 0),
+      runs: rows.length,
+      unsubscribes: unsubscribes.filter((u) => !since || u.at >= since).length,
+    })
+    const byRule: ImpactSummary['byRule'] = {}
+    for (const a of done) if (a.ruleId) (byRule[a.ruleId] ??= { messages: 0 }).messages += a.messageCount
+    return { month: totals(done.filter((a) => a.at >= monthStart), monthStart), all: totals(done), byRule }
+  }
+
+  /** Remember an unsubscribe the user just sent, so a later check can tell whether the sender really stopped. */
+  async recordUnsubscribe(email: string, method: UnsubscribeRecord['method']): Promise<void> {
+    const address = email.trim().toLowerCase()
+    const name = (await this.subscriptions().catch(() => [])).find((s) => s.email === address)?.name ?? address
+    this.store.recordUnsubscribe({ email: address, name, at: new Date().toISOString(), method, status: 'waiting' })
+  }
+
+  unsubscribeStatus(): UnsubscribeRecord[] {
+    return this.store.listUnsubscribes()
+  }
+
+  /**
+   * Checks, a week after each unsubscribe, whether the sender really stopped (a Gmail search for anything they sent
+   * since). Senders that kept sending get an automatic archive cleanup, so they stop cluttering the inbox even though
+   * unsubscribing didn't work. Returns how many records changed.
+   */
+  async checkUnsubscribes(now = Date.now()): Promise<number> {
+    const provider = this.getProvider()
+    if (!provider.searchInbox) return 0
+    let changed = 0
+    for (const record of this.store.listUnsubscribes()) {
+      if (record.status === 'worked' || record.ruleId) continue
+      const checkAfter = Date.parse(record.at) + UNSUBSCRIBE_GRACE_MS
+      if (now < checkAfter) continue
+      // anywhere in the mailbox, not just the inbox: mail they sent that some other rule already filed away still counts
+      const since = Math.floor(checkAfter / 1000)
+      const sent = await provider.searchInbox(`from:(${this.senderRule(record.email, 'archive').filters.from}) after:${since}`)
+      if (sent.length === 0) {
+        this.store.recordUnsubscribe({ ...record, status: 'worked', checkedAt: new Date(now).toISOString() })
+      } else {
+        const rule: CleanupRule = {
+          id: `unsub-${record.email}`, name: `Archive ${record.name} (still sending after unsubscribe)`,
+          filters: { from: record.email }, actions: [{ type: 'archive' }], auto: true,
+        }
+        if (!this.store.listCleanupRules().some((r) => r.id === rule.id)) this.store.saveCleanupRule(rule)
+        this.store.recordUnsubscribe({ ...record, status: 'still_sending', checkedAt: new Date(now).toISOString(), ruleId: rule.id })
+      }
+      changed++
+    }
+    return changed
   }
 
   // --- Automatic rules and cleanups: applied on their own, with limits, because nobody is there to preview them ---
@@ -628,7 +895,11 @@ export class OrganizerService {
     const needsReview: AutomationStatus['needsReview'] = []
     const errors: AutomationStatus['errors'] = []
     let changed = 0
+    const ran: ActivityEntry[] = []
     const provider = this.getProvider()
+
+    // first, so a sender that kept sending is archived in this same run
+    try { await this.checkUnsubscribes() } catch (e) { errors.push({ name: 'Unsubscribe check', message: e instanceof Error ? e.message : String(e), kind: 'cleanup' }) }
 
     for (const rule of this.store.listCleanupRules().filter((r) => r.auto && !r.runOnce)) {
       try {
@@ -642,7 +913,7 @@ export class OrganizerService {
           needsReview.push({ id: rule.id, name: rule.name, count, kind: 'cleanup' })
           continue
         }
-        await this.runCleanup({ ...rule, name: `${rule.name} (automatic)` }, provider, query, count)
+        ran.push(await this.runCleanup({ ...rule, name: `${rule.name} (automatic)` }, provider, query, count, undefined, true))
         changed++
       } catch (e) {
         errors.push({ name: rule.name, message: e instanceof Error ? e.message : String(e), kind: 'cleanup' })
@@ -661,7 +932,7 @@ export class OrganizerService {
             needsReview.push({ id: rule.id, name: rule.name, count, kind: 'rule' })
             continue
           }
-          await this.applyRule(rule, messages, `${rule.name} (automatic)`)
+          ran.push(await this.applyRule(rule, messages, `${rule.name} (automatic)`, true))
           changed++
         } catch (e) {
           errors.push({ name: rule.name, message: e instanceof Error ? e.message : String(e), kind: 'rule' })
@@ -670,7 +941,10 @@ export class OrganizerService {
       if (changed) this.mailChanged()
     }
 
-    this.auto = { lastRunAt: new Date().toISOString(), needsReview, errors, runs: this.auto.runs + (changed ? 1 : 0) }
+    this.auto = {
+      lastRunAt: new Date().toISOString(), needsReview, errors, runs: this.auto.runs + (changed ? 1 : 0),
+      lastChanged: ran.reduce((n, e) => n + e.messageCount, 0), lastSummary: describeRun(ran),
+    }
     if (changed || needsReview.length || errors.length) this.onAutomatic(this.automation())
     return this.automation()
   }

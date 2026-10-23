@@ -65,6 +65,32 @@ export function buildOverview(messages: MailMessage[], topN = 10): Overview {
   }
 }
 
+export interface DuplicateGroup {
+  /** the copy to keep: the newest */
+  keep: MailMessage
+  /** the others, which add nothing */
+  extras: MailMessage[]
+}
+
+/**
+ * Messages that look like the same one arriving more than once: same sender, subject and size, sent within the same
+ * minute. Strict on purpose (a repeated subject like "Your receipt" a day apart is not a duplicate), since all that's
+ * known about a message is its headers.
+ */
+export function findDuplicates(messages: MailMessage[]): DuplicateGroup[] {
+  const groups = new Map<string, MailMessage[]>()
+  for (const m of messages) {
+    const key = [m.from.email.toLowerCase(), m.subject.trim(), m.sizeBytes, m.date.slice(0, 16)].join('\u0000')
+    ;(groups.get(key) ?? groups.set(key, []).get(key)!).push(m)
+  }
+  return [...groups.values()]
+    .filter((g) => g.length > 1)
+    .map((g) => {
+      const sorted = [...g].sort((a, b) => b.date.localeCompare(a.date) || b.id.localeCompare(a.id))
+      return { keep: sorted[0], extras: sorted.slice(1) }
+    })
+}
+
 export interface Subscription {
   email: string
   name: string

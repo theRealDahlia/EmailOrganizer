@@ -10,11 +10,18 @@ import { CountUp } from './Motion'
 import { SenderPanel } from './SenderPanel'
 import { SendersTab } from './SendersTab'
 import { ThemeSwitch } from './ThemeSwitch'
+import { ImpactCard } from './ImpactCard'
+import { SpaceTab } from './SpaceTab'
+import { SuggestionsCard } from './SuggestionsCard'
+import { AiKeyCard } from './AiKeyCard'
+import { BackgroundCard } from './BackgroundCard'
+import { CommandPalette, type Command } from './CommandPalette'
 
-type Tab = 'overview' | 'senders' | 'cleanup' | 'subscriptions' | 'activity' | 'accounts'
-const TABS: Tab[] = ['overview', 'senders', 'cleanup', 'subscriptions', 'activity', 'accounts']
+type Tab = 'overview' | 'space' | 'senders' | 'cleanup' | 'subscriptions' | 'activity' | 'accounts'
+const TABS: Tab[] = ['overview', 'space', 'senders', 'cleanup', 'subscriptions', 'activity', 'accounts']
 const PAGES: Record<Tab, { title: string; blurb: string }> = {
   overview: { title: 'Overview', blurb: 'What’s filling your inbox, and who it’s from.' },
+  space: { title: 'Free up space', blurb: 'See what’s taking room in your Gmail and clear it safely.' },
   senders: { title: 'Senders', blurb: 'Everyone who emails you, and how often.' },
   cleanup: { title: 'Cleanup', blurb: 'Rules that archive, trash or label mail, once or on their own.' },
   subscriptions: { title: 'Subscriptions', blurb: 'Newsletters and senders you can unsubscribe from.' },
@@ -97,6 +104,7 @@ function OverviewTab({ overview, error, progress, onRescan, onCancel, onScanAll,
           <span>{sampled ? 'subscriptions found so far' : 'subscriptions'}</span>
         </div>
       </div>
+      <SuggestionsCard scanKey={`${overview.total}:${overview.complete}:${overview.scanning}`} onChanged={onChanged} onOpenCleanup={onOpenCleanup} onGoToCleanup={onGoToCleanup} />
       <div className="grid">
         {tabs === null ? (
           <section className="card">
@@ -155,6 +163,8 @@ function ActivityTab({ onUndone }: { onUndone: () => void }) {
   const load = useCallback(() => api.activity().then(setItems), [])
   useEffect(() => { load() }, [load])
   return (
+    <>
+    <ImpactCard refreshKey={items.map((i) => `${i.id}${i.undone}`).join()} />
     <section className="card">
       <h2>Activity</h2>
       {items.length === 0 && <p className="muted">Nothing yet. Changes you apply will appear here, and can be undone.</p>}
@@ -172,6 +182,7 @@ function ActivityTab({ onUndone }: { onUndone: () => void }) {
         </div>
       ))}
     </section>
+    </>
   )
 }
 
@@ -220,6 +231,8 @@ function AccountsTab({ status, onChanged }: { status: AccountStatus | null; onCh
           </>
         )}
       </section>
+      <BackgroundCard />
+      <AiKeyCard secureStorage={status.secureStorage} />
       {status.mode === 'demo' && (
         <details className="card" style={{ marginTop: 16 }} open={!status.hasCredentials}>
           <summary>Advanced: use your own Google OAuth client</summary>
@@ -244,6 +257,16 @@ export function App() {
   const [status, setStatus] = useState<AccountStatus | null>(null)
   // "Custom cleanup" on a sender opens the Cleanup editor already filled in for them.
   const [prefill, setPrefill] = useState<CleanupPrefill | null>(null)
+  // Cmd/Ctrl+K opens the command palette from anywhere.
+  const [paletteOpen, setPaletteOpen] = useState(false)
+  const [sendersSearch, setSendersSearch] = useState<{ text: string } | undefined>(undefined)
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); setPaletteOpen((open) => !open) }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
   const openCleanupFor = (email: string, name: string) => {
     setPrefill({ name: `Mail from ${name || email}`, filters: { from: email, keepStarred: true }, actions: [{ type: 'archive' }] })
     setTab('cleanup')
@@ -292,11 +315,24 @@ export function App() {
     return () => observer.disconnect()
   }, [tab])
 
+  const commands: Command[] = [
+    ...TABS.map((t) => ({ id: `go-${t}`, title: PAGES[t].title, group: 'Go to', icon: t === 'space' ? 'space' : t, keywords: PAGES[t].blurb, run: () => setTab(t) })),
+    { id: 'new-rule', title: 'New cleanup rule', group: 'Action', icon: 'cleanup', keywords: 'create add rule', run: () => { setPrefill({ name: '', filters: {}, actions: [] }); setTab('cleanup') } },
+    { id: 'scan-all', title: 'Scan the whole inbox', group: 'Action', icon: 'inbox', keywords: 'download read senders exact', run: () => { api.scanFullInbox().then(() => refresh()) } },
+    { id: 'rescan', title: 'Rescan inbox', group: 'Action', icon: 'inbox', keywords: 'refresh reload', run: () => refresh(true) },
+    { id: 'run-auto', title: 'Run automatic rules now', group: 'Action', icon: 'clock', keywords: 'automation', run: () => { api.runAutomaticNow().then(() => refresh(), () => {}) } },
+    ...(['light', 'dark', 'system'] as const).map((t) => ({
+      id: `theme-${t}`, title: `Use ${t === 'system' ? 'the system' : t} theme`, group: 'Theme', icon: t === 'light' ? 'sun' : t === 'dark' ? 'moon' : 'monitor', keywords: 'appearance colour color mode',
+      run: () => { api.setTheme(t).then((saved) => window.dispatchEvent(new CustomEvent('theme-changed', { detail: saved })), () => {}) },
+    })),
+  ]
+
   const account = status?.mode === 'gmail' ? status.email ?? 'Gmail' : 'Demo mailbox'
   const head = PAGES[tab]
 
   return (
     <div className="shell">
+      {paletteOpen && <CommandPalette commands={commands} onClose={() => setPaletteOpen(false)} onSearchSenders={(text) => { setSendersSearch({ text }); setTab('senders') }} />}
       <aside className="sidebar">
         <div className="brand"><span className="brand-mark"><Icon name="subscriptions" size={16} /></span>Email Organizer</div>
         <nav role="tablist" aria-orientation="vertical" ref={navRef}>
@@ -325,9 +361,10 @@ export function App() {
           {tab === 'overview' && <OverviewTab overview={overview} error={overviewError} progress={progress} onRescan={() => refresh(true)} onCancel={() => { api.cancelScan() }}
             onScanAll={() => { api.scanFullInbox().then(() => refresh()) }}
             onChanged={() => refresh()} onOpenCleanup={openCleanupFor} onGoToCleanup={() => setTab('cleanup')} />}
-          {tab === 'senders' && <SendersTab scanKey={`${overview?.total}:${overview?.scanning}:${overview?.complete}`} progress={progress} onCancel={() => { api.cancelScan() }}
+          {tab === 'space' && <SpaceTab onChanged={() => refresh()} onOpenCleanup={openCleanupFor} onGoToCleanup={() => setTab('cleanup')} />}
+          {tab === 'senders' && <SendersTab initialQuery={sendersSearch} scanKey={`${overview?.total}:${overview?.scanning}:${overview?.complete}`} progress={progress} onCancel={() => { api.cancelScan() }}
             onScanAll={() => { api.scanFullInbox().then(() => refresh()) }} onChanged={() => refresh()} onOpenCleanup={openCleanupFor} onGoToCleanup={() => setTab('cleanup')} />}
-          {tab === 'cleanup' && <CleanupTab onApplied={() => refresh()} scanning={scanning} prefill={prefill} onPrefillUsed={() => setPrefill(null)} />}
+          {tab === 'cleanup' && <CleanupTab onApplied={() => refresh()} scanning={scanning} prefill={prefill} onPrefillUsed={() => setPrefill(null)} onGoToAccount={() => setTab('accounts')} />}
           {tab === 'subscriptions' && <SubscriptionsTab scan={overview} onGoToCleanup={() => setTab('cleanup')} onChanged={() => refresh()} onOpenCleanup={openCleanupFor} />}
                     {tab === 'activity' && <ActivityTab onUndone={() => refresh()} />}
           {tab === 'accounts' && <AccountsTab status={status} onChanged={accountChanged} />}

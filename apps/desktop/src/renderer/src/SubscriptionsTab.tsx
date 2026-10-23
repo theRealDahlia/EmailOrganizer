@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from 'react'
 import { parseListUnsubscribe, type Subscription } from '@organizer/core'
-import type { OverviewResult } from '../../shared'
+import type { OverviewResult, UnsubscribeRecord } from '../../shared'
 import { CoverageNote } from './ScanStatus'
 import { Avatar, Icon } from './Icons'
 import { SenderPanel } from './SenderPanel'
+import { UnsubStatus } from './Badges'
 
 const api = window.organizer
 
@@ -17,6 +18,9 @@ export function SubscriptionsTab({ scan, onGoToCleanup, onChanged, onOpenCleanup
   const [done, setDone] = useState<Record<string, string>>({})
   const [busy, setBusy] = useState<string | null>(null)
   const [query, setQuery] = useState('')
+  const [statuses, setStatuses] = useState<Record<string, UnsubscribeRecord>>({})
+  const loadStatuses = () => api.unsubscribeStatus().then((list) => setStatuses(Object.fromEntries(list.map((r) => [r.email, r]))), () => {})
+  useEffect(() => { loadStatuses() }, [])
 
   const load = () => {
     setError(null)
@@ -26,7 +30,7 @@ export function SubscriptionsTab({ scan, onGoToCleanup, onChanged, onOpenCleanup
 
   const act = async (email: string, fn: () => Promise<string>) => {
     setBusy(email); setError(null); setConfirming(null)
-    try { const msg = await fn(); setDone((d) => ({ ...d, [email]: msg })) }
+    try { const msg = await fn(); setDone((d) => ({ ...d, [email]: msg })); loadStatuses() }
     catch (e) { setError(e instanceof Error ? e.message : String(e)) }
     finally { setBusy(null) }
   }
@@ -79,6 +83,7 @@ export function SubscriptionsTab({ scan, onGoToCleanup, onChanged, onOpenCleanup
                     <div className="muted">
                       {s.count} emails · {Math.round(s.readRate * 100)}% read{s.readRate < 0.2 && <> <span className="pill warn">rarely read</span></>} · last {new Date(s.lastDate).toLocaleDateString()}
                     </div>
+                    {statuses[s.email] && <div style={{ marginTop: 2 }}><UnsubStatus record={statuses[s.email]} /></div>}
                     {done[s.email] && <div style={{ color: 'var(--ok)' }}>{done[s.email]}</div>}
                   </div>
                 </span>

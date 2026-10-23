@@ -327,9 +327,72 @@ table.fixed.senders th.num { width: 96px; }
 .type-toggle label.inline input { margin-top: 3px; }
 .type-toggle .muted { font-size: 13px; }
 
+/* ---- Impact ---- */
+.impact { margin-bottom: 16px; background: linear-gradient(150deg, var(--tint) 0%, var(--panel) 60%); }
+.impact-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
+.impact-head h2 { margin-bottom: 2px; }
+.impact-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
+.impact-stat { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.impact-stat b { font-size: 24px; font-weight: 650; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; margin-top: 8px; line-height: 1.2; }
+.seg { display: inline-flex; padding: 2px; gap: 2px; border-radius: 9px; background: color-mix(in srgb, var(--text) 7%, transparent); }
+.seg button { border: 0; background: none; padding: 4px 10px; border-radius: 7px; font: inherit; font-size: 12px; font-weight: 500; color: var(--muted); cursor: pointer; }
+.seg button[aria-checked="true"] { background: var(--panel); color: var(--text); box-shadow: var(--shadow), 0 0 0 1px var(--line); }
+.handled { margin-left: 8px; color: var(--ok); font-weight: 500; }
+
 /* ---- Theme switch ---- */
 .theme-switch { display: grid; grid-template-columns: repeat(3, 1fr); gap: 2px; padding: 3px; border-radius: 10px; background: color-mix(in srgb, var(--text) 7%, transparent); }
 .theme-switch button { display: flex; align-items: center; justify-content: center; min-width: 0; padding: 6px 4px; border: 0; border-radius: 8px; background: none; color: var(--muted); font: inherit; font-size: 12px; font-weight: 500; cursor: pointer; transition: background-color var(--motion-150, 150ms), color var(--motion-150, 150ms), box-shadow var(--motion-150, 150ms); }
 .theme-switch button:hover { color: var(--text); }
 .theme-switch button[aria-checked="true"] { background: var(--panel); color: var(--text); box-shadow: var(--shadow), 0 0 0 1px var(--line); }
 .theme-switch button[aria-checked="true"] svg { color: var(--accent); }
+
+/* ---- Free up space ---- */
+.space-hero { margin-bottom: 16px; background: linear-gradient(150deg, var(--tint) 0%, var(--panel) 60%); }
+.space-hero .meter { height: 10px; margin: 12px 0; }
+.space-lead { margin: 0 0 6px; font-size: 15px; }
+.space-list { display: grid; gap: 12px; }
+.space-card { display: grid; gap: 12px; border-left: 3px solid var(--solid); }
+.space-top { display: flex; align-items: center; gap: 12px; }
+.space-title { display: flex; flex-direction: column; flex: 1; min-width: 0; line-height: 1.35; }
+.space-title .muted { font-size: 13px; }
+.space-size { display: flex; flex-direction: column; align-items: flex-end; text-align: right; line-height: 1.35; }
+.space-size b { font-size: 18px; font-variant-numeric: tabular-nums; }
+.space-samples { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; font-size: 13px; }
+.space-samples li { display: grid; grid-template-columns: minmax(80px, 1fr) minmax(0, 2fr) auto; gap: 12px; padding: 6px 10px; border-radius: 8px; background: var(--bg); }
+.space-samples span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.space-samples .s-size { font-variant-numeric: tabular-nums; font-weight: 600; }
+
+/* ---- Suggestions ---- */
+.suggestions { margin-bottom: 16px; }
+.suggestions .suggestion { border-top: 1px solid var(--line); }
+.suggestions .suggestion:first-of-type { border-top: 0; }
+.suggestions .suggestion > .row { border-bottom: 0; }
+.suggestions .suggestion > .sender-panel { margin: 0 0 12px; }
+.suggestions .actions { align-items: center; }
+
+/* ---- Plain-English rules ---- */
+.plain-english { display: grid; gap: 8px; margin-bottom: 16px; background: linear-gradient(120deg, var(--tint) 0%, var(--panel) 60%); }
+.plain-english label { display: block; }
+.pe-row { display: flex; gap: 8px; }
+.pe-row input { flex: 1; min-width: 0; }
+.pe-row .btn { display: inline-flex; align-items: center; gap: 6px; }
+.pe-privacy { font-size: 12px; }
+.rule-alt { margin: 0 0 16px; color: var(--muted); font-size: 13px; }
+.link-btn { background: none; border: 0; padding: 0; font: inherit; color: var(--accent); cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
+
+/* ---- Command palette ---- */
+.palette-backdrop { position: fixed; inset: 0; z-index: 50; display: flex; justify-content: center; align-items: flex-start; padding-top: 14vh; background: color-mix(in srgb, var(--bg) 55%, transparent); backdrop-filter: blur(2px); animation: fade var(--motion-150, 150ms) ease-out; }
+.palette { width: min(560px, calc(100vw - 32px)); background: var(--panel); border: 1px solid var(--line); border-radius: 14px; box-shadow: 0 24px 60px -20px rgba(10, 10, 30, .45); overflow: hidden; animation: rise-sm var(--motion-200, 200ms) cubic-bezier(0.16, 1, 0.3, 1); }
+.palette-input { display: flex; align-items: center; gap: 10px; padding: 12px 14px; border-bottom: 1px solid var(--line); color: var(--muted); }
+.palette-input input { flex: 1; min-width: 0; border: 0; background: none; padding: 0; font-size: 15px; color: var(--text); outline: none; }
+.palette-input input:focus { outline: none; border: 0; }
+.palette kbd { font: inherit; font-size: 11px; padding: 1px 6px; border: 1px solid var(--line); border-radius: 5px; color: var(--muted); }
+.palette ul { list-style: none; margin: 0; padding: 6px; max-height: 340px; overflow-y: auto; }
+.palette li { display: flex; align-items: center; gap: 10px; padding: 9px 10px; border-radius: 8px; cursor: pointer; }
+.palette li span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.palette li small { color: var(--muted); font-size: 12px; }
+.palette li.on { background: var(--accent-soft); color: var(--text); }
+.palette li.on svg { color: var(--accent); }
+.palette li.none { color: var(--muted); cursor: default; }
+@keyframes fade { from { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .palette-backdrop, .palette { animation: none; } }

@@ -15,7 +15,13 @@ export function ThemeSwitch() {
   const [pref, setPref] = useState<ThemePref>('system')
   const group = useRef<HTMLDivElement>(null)
 
-  useEffect(() => { api.getTheme().then(setPref, () => {}) }, [])
+  useEffect(() => {
+    api.getTheme().then(setPref, () => {})
+    // the command palette can change the theme too
+    const onChange = (e: Event) => setPref((e as CustomEvent<ThemePref>).detail)
+    window.addEventListener('theme-changed', onChange)
+    return () => window.removeEventListener('theme-changed', onChange)
+  }, [])
 
   const choose = (next: ThemePref) => {
     const before = pref

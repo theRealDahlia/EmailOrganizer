@@ -62,14 +62,14 @@ export function useScannedRules(onApplied: () => void) {
 export type ScannedRules = ReturnType<typeof useScannedRules>
 
 /** One scanned-mail rule as a row of the shared list. `locked` disables the buttons while something else is busy. */
-export function ScannedRuleRow({ rule, h, locked }: { rule: Rule; h: ScannedRules; locked: boolean }) {
+export function ScannedRuleRow({ rule, h, locked, handled }: { rule: Rule; h: ScannedRules; locked: boolean; handled?: number }) {
   return (
     <div className="row">
       <div>
         <label><input type="checkbox" checked={rule.enabled} disabled={locked} onChange={() => h.toggleEnabled(rule)} /> <b>{rule.name}</b></label>
         <span className="pill scanned" title="Matches on mail the app has downloaded (your newest messages, or the whole inbox after a full scan)">Scanned mail</span>
         {rule.auto && rule.enabled && <span className="pill ok" title="Applied on its own, about every 30 minutes while the app is open">Automatic</span>}
-        <div className="muted">{describe(rule)} <MoveChips actions={rule.actions} /></div>
+        <div className="muted">{describe(rule)} <MoveChips actions={rule.actions} />{handled ? <span className="handled">Handled {handled.toLocaleString()} {handled === 1 ? 'message' : 'messages'}</span> : null}</div>
       </div>
       <div className="actions">
         <label className="auto-toggle" title="Apply this on its own, with no preview">

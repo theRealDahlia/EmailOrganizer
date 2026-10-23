@@ -1,6 +1,6 @@
 import Database from 'better-sqlite3'
 import type { CleanupRule, MailAction, MailMessage, Rule } from '@organizer/core'
-import type { ActivityEntry } from '../shared'
+import type { ActivityEntry, UnsubscribeRecord } from '../shared'
 
 export interface UndoStep {
   messageIds: string[]
@@ -15,6 +15,14 @@ export interface ScanState {
   /** epoch ms of the last full listing of the inbox */
   listedAt: number
   ids: string[]
+}
+
+/** What an activity entry records beyond its name and count, so totals can be worked out later. */
+export interface ActivityMeta {
+  ruleId?: string
+  bytes?: number
+  automatic?: boolean
+  move?: 'trash' | 'archive' | null
 }
 
 export class Store {
@@ -46,7 +54,19 @@ export class Store {
         undo_json TEXT NOT NULL,
         undone INTEGER NOT NULL DEFAULT 0
       );
+      CREATE TABLE IF NOT EXISTS dismissed (id TEXT PRIMARY KEY);
+      CREATE TABLE IF NOT EXISTS unsubscribes (
+        email TEXT PRIMARY KEY, name TEXT NOT NULL, at TEXT NOT NULL, method TEXT NOT NULL,
+        status TEXT NOT NULL, checked_at TEXT, rule_id TEXT
+      );
     `)
+    // Databases made before impact tracking lack these columns.
+    const have = new Set((this.db.prepare('PRAGMA table_info(activity)').all() as { name: string }[]).map((c) => c.name))
+    const add = (name: string, type: string) => { if (!have.has(name)) this.db.exec(`ALTER TABLE activity ADD COLUMN ${name} ${type}`) }
+    add('rule_id', 'TEXT')
+    add('bytes', 'INTEGER NOT NULL DEFAULT 0')
+    add('automatic', 'INTEGER NOT NULL DEFAULT 0')
+    add('move', 'TEXT')
   }
 
   listRules(): Rule[] {
@@ -79,19 +99,53 @@ export class Store {
     this.db.prepare('DELETE FROM rules WHERE id = ?').run(id)
   }
 
-  addActivity(ruleName: string, messageCount: number, undo: UndoStep[]): ActivityEntry {
+  addActivity(ruleName: string, messageCount: number, undo: UndoStep[], meta: ActivityMeta = {}): ActivityEntry {
     const at = new Date().toISOString()
-    const info = this.db.prepare('INSERT INTO activity (at, rule_name, message_count, undo_json) VALUES (?, ?, ?, ?)')
-      .run(at, ruleName, messageCount, JSON.stringify(undo))
-    return { id: Number(info.lastInsertRowid), at, ruleName, messageCount, undone: false }
+    const info = this.db.prepare('INSERT INTO activity (at, rule_name, message_count, undo_json, rule_id, bytes, automatic, move) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(at, ruleName, messageCount, JSON.stringify(undo), meta.ruleId ?? null, Math.round(meta.bytes ?? 0), meta.automatic ? 1 : 0, meta.move ?? null)
+    return { id: Number(info.lastInsertRowid), at, ruleName, messageCount, undone: false, ...meta }
+  }
+
+  private activityRows(sql: string, ...params: string[]): ActivityEntry[] {
+    return this.db.prepare(sql).all(...params).map((r) => {
+      const row = r as { id: number; at: string; rule_name: string; message_count: number; undone: number; rule_id: string | null; bytes: number; automatic: number; move: string | null }
+      return {
+        id: row.id, at: row.at, ruleName: row.rule_name, messageCount: row.message_count, undone: !!row.undone,
+        ...(row.rule_id && { ruleId: row.rule_id }), bytes: row.bytes, automatic: !!row.automatic, move: (row.move as ActivityEntry['move']) ?? null,
+      }
+    })
   }
 
   listActivity(): ActivityEntry[] {
-    return this.db.prepare('SELECT id, at, rule_name, message_count, undone FROM activity ORDER BY id DESC LIMIT 100').all()
-      .map((r) => {
-        const row = r as { id: number; at: string; rule_name: string; message_count: number; undone: number }
-        return { id: row.id, at: row.at, ruleName: row.rule_name, messageCount: row.message_count, undone: !!row.undone }
-      })
+    return this.activityRows('SELECT id, at, rule_name, message_count, undone, rule_id, bytes, automatic, move FROM activity ORDER BY id DESC LIMIT 100')
+  }
+
+  /** Every entry from `sinceIso` on (all of them without it), without the undo data. For totals, so no row limit. */
+  activitySince(sinceIso?: string): ActivityEntry[] {
+    return this.activityRows(
+      `SELECT id, at, rule_name, message_count, undone, rule_id, bytes, automatic, move FROM activity ${sinceIso ? 'WHERE at >= ?' : ''} ORDER BY id DESC`,
+      ...(sinceIso ? [sinceIso] : []),
+    )
+  }
+
+  dismiss(id: string): void {
+    this.db.prepare('INSERT OR IGNORE INTO dismissed (id) VALUES (?)').run(id)
+  }
+
+  listDismissed(): string[] {
+    return (this.db.prepare('SELECT id FROM dismissed').all() as { id: string }[]).map((r) => r.id)
+  }
+
+  recordUnsubscribe(record: UnsubscribeRecord): void {
+    this.db.prepare('INSERT OR REPLACE INTO unsubscribes (email, name, at, method, status, checked_at, rule_id) VALUES (?, ?, ?, ?, ?, ?, ?)')
+      .run(record.email, record.name, record.at, record.method, record.status, record.checkedAt ?? null, record.ruleId ?? null)
+  }
+
+  listUnsubscribes(): UnsubscribeRecord[] {
+    return this.db.prepare('SELECT email, name, at, method, status, checked_at, rule_id FROM unsubscribes ORDER BY at DESC').all().map((r) => {
+      const row = r as { email: string; name: string; at: string; method: UnsubscribeRecord['method']; status: UnsubscribeRecord['status']; checked_at: string | null; rule_id: string | null }
+      return { email: row.email, name: row.name, at: row.at, method: row.method, status: row.status, ...(row.checked_at && { checkedAt: row.checked_at }), ...(row.rule_id && { ruleId: row.rule_id }) }
+    })
   }
 
   takeUndo(id: number): UndoStep[] | null {

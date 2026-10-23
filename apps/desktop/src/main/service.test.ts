@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import { DemoProvider, buildQuery, type CleanupRule, type InboxChanges, type MailMessage, type Rule } from '@organizer/core'
+import { DemoProvider, applyActionsToMessage, buildQuery, type CleanupRule, type InboxChanges, type MailMessage, type Rule } from '@organizer/core'
 import type { ScanState, Store } from './db'
 import type { ScanProgress } from '../shared'
-import { OrganizerService } from './service'
+import { OrganizerService, describeRun } from './service'
 
 /** In-memory stand-in for Store, so these tests don't need the Electron-built SQLite module. */
 class FakeStore {
@@ -12,7 +12,7 @@ class FakeStore {
   saveCleanupRule(r: CleanupRule) { this.cleanup = [...this.cleanup.filter((x) => x.id !== r.id), r] }
   deleteCleanupRule(id: string) { this.cleanup = this.cleanup.filter((x) => x.id !== id) }
   messages = new Map<string, Map<string, MailMessage>>()
-  activity: { id: number; undo: unknown; undone: boolean; ruleName: string; messageCount: number; at: string }[] = []
+  activity: { id: number; undo: unknown; undone: boolean; ruleName: string; messageCount: number; at: string; ruleId?: string; bytes?: number; automatic?: boolean; move?: 'trash' | 'archive' | null }[] = []
   private acct = (a: string) => this.messages.get(a) ?? this.messages.set(a, new Map()).get(a)!
   listRules() { return this.rules }
   saveRule(r: Rule) { this.rules = [...this.rules.filter((x) => x.id !== r.id), r] }
@@ -23,11 +23,18 @@ class FakeStore {
   scanStates = new Map<string, ScanState>()
   loadScanState(a: string) { return this.scanStates.get(a) ?? null }
   saveScanState(a: string, s: ScanState) { this.scanStates.set(a, s) }
-  addActivity(ruleName: string, messageCount: number, undo: unknown) {
-    const e = { id: this.activity.length + 1, at: 'now', ruleName, messageCount, undo, undone: false }
+  addActivity(ruleName: string, messageCount: number, undo: unknown, meta: Record<string, unknown> = {}) {
+    const e = { id: this.activity.length + 1, at: new Date().toISOString(), ruleName, messageCount, undo, undone: false, ...meta }
     this.activity.push(e)
     return e
   }
+  activitySince() { return this.activity as unknown as import('../shared').ActivityEntry[] }
+  dismissed: string[] = []
+  dismiss(id: string) { if (!this.dismissed.includes(id)) this.dismissed.push(id) }
+  listDismissed() { return this.dismissed }
+  unsubscribes: import('../shared').UnsubscribeRecord[] = []
+  recordUnsubscribe(r: import('../shared').UnsubscribeRecord) { this.unsubscribes = [...this.unsubscribes.filter((x) => x.email !== r.email), r] }
+  listUnsubscribes() { return this.unsubscribes }
   takeUndo(id: number) { const e = this.activity.find((a) => a.id === id)!; e.undone = true; return e.undo }
 }
 
@@ -824,5 +831,389 @@ describe('automatic rules and cleanups', () => {
     expect(a).toBe(b)
     await a
     expect(store.activity).toHaveLength(1)
+  })
+})
+
+describe('impact', () => {
+  const setupImpact = () => {
+    const provider = new CountingProvider(300)
+    const store = new FakeStore()
+    return { provider, store, service: new OrganizerService(() => provider, store as unknown as Store) }
+  }
+
+  it('totals what was moved, how much space that was, and which rule did it', async () => {
+    const { service, store } = setupImpact()
+    await service.overview() // the scan is what tells the app each message's size
+    store.saveCleanupRule({ id: 'shop', name: 'Shop', filters: { from: 'deals@shopmart.example' }, actions: [{ type: 'trash' }] })
+    store.saveCleanupRule({ id: 'digest', name: 'Digest', filters: { from: 'news@dailydigest.example' }, actions: [{ type: 'archive' }] })
+    const shop = await service.cleanupCount('shop')
+    const digest = await service.cleanupCount('digest')
+    await service.applyCleanup('shop', shop.count)
+    await service.applyCleanup('digest', digest.count)
+
+    const { month, all, byRule } = service.impact()
+    expect(month).toMatchObject({ messages: shop.count + digest.count, trashed: shop.count, archived: digest.count, runs: 2, automatic: 0 })
+    expect(month.bytesTrashed).toBeGreaterThan(0)
+    expect(all.messages).toBe(month.messages)
+    expect(byRule).toEqual({ shop: { messages: shop.count }, digest: { messages: digest.count } })
+  })
+
+  it('stops counting a change once it is undone', async () => {
+    const { service, store } = setupImpact()
+    store.saveCleanupRule({ id: 'shop', name: 'Shop', filters: { from: 'deals@shopmart.example' }, actions: [{ type: 'trash' }] })
+    const { count } = await service.cleanupCount('shop')
+    const entry = await service.applyCleanup('shop', count)
+    expect(service.impact().all.messages).toBe(count)
+    await service.undo(entry.id as number)
+    expect(service.impact().all).toMatchObject({ messages: 0, bytesTrashed: 0, runs: 0 })
+    expect(service.impact().byRule).toEqual({})
+  })
+
+  it('counts automatic runs and one-sender clean-ups, and keeps one-sender clean-ups out of the per-rule list', async () => {
+    const { service, store } = setupImpact()
+    store.saveCleanupRule({ id: 'auto', name: 'Auto', filters: { from: 'deals@shopmart.example' }, actions: [{ type: 'archive' }], auto: true })
+    await service.runAutomatic()
+    const sender = await service.senderSummary('news@dailydigest.example')
+    await service.cleanSender('news@dailydigest.example', 'markRead', sender.counts.markRead)
+
+    const { all, byRule } = service.impact()
+    expect(all.automatic).toBeGreaterThan(0)
+    expect(all.runs).toBe(2)
+    expect(Object.keys(byRule)).toEqual(['auto'])
+  })
+
+  it('counts unsubscribes this month', async () => {
+    const { service, store } = setupImpact()
+    await service.recordUnsubscribe('News@DailyDigest.example', 'oneClick')
+    expect(store.unsubscribes).toMatchObject([{ email: 'news@dailydigest.example', status: 'waiting', method: 'oneClick' }])
+    expect(service.impact().month.unsubscribes).toBe(1)
+    expect(service.impact().all.unsubscribes).toBe(1)
+  })
+})
+
+describe('checking that an unsubscribe worked', () => {
+  const DAY = 86_400_000
+  const setupUnsub = () => {
+    const provider = new CountingProvider(300)
+    const store = new FakeStore()
+    return { provider, store, service: new OrganizerService(() => provider, store as unknown as Store) }
+  }
+  const record = (email: string, daysAgo: number) =>
+    ({ email, name: email, at: new Date(Date.now() - daysAgo * DAY).toISOString(), method: 'oneClick' as const, status: 'waiting' as const })
+
+  it('waits a week before judging', async () => {
+    const { service, store } = setupUnsub()
+    store.recordUnsubscribe(record('news@dailydigest.example', 3))
+    expect(await service.checkUnsubscribes()).toBe(0)
+    expect(store.unsubscribes[0].status).toBe('waiting')
+  })
+
+  it('marks it worked when nothing arrived since', async () => {
+    const { service, store } = setupUnsub()
+    store.recordUnsubscribe(record('news@dailydigest.example', 0))
+    expect(await service.checkUnsubscribes(Date.now() + 8 * DAY)).toBe(1)
+    expect(store.unsubscribes[0]).toMatchObject({ status: 'worked' })
+    expect(store.cleanup).toEqual([])
+    expect(await service.checkUnsubscribes(Date.now() + 9 * DAY)).toBe(0) // settled, so not checked again
+  })
+
+  it('archives the sender automatically when mail kept arriving', async () => {
+    const { service, store, provider } = setupUnsub()
+    store.recordUnsubscribe(record('news@dailydigest.example', 10)) // mail from them in the last 3 days
+    expect((await provider.searchInbox!('in:inbox from:(news@dailydigest.example)')).length).toBeGreaterThan(0)
+
+    await service.runAutomatic() // checks first, then runs the cleanup it just made
+    expect(store.unsubscribes[0]).toMatchObject({ status: 'still_sending', ruleId: 'unsub-news@dailydigest.example' })
+    expect(store.cleanup).toEqual([expect.objectContaining({ id: 'unsub-news@dailydigest.example', auto: true, actions: [{ type: 'archive' }] })])
+    expect((await provider.searchInbox!('in:inbox from:(news@dailydigest.example)')).length).toBe(0)
+    expect(store.activity[0].ruleName).toContain('still sending after unsubscribe')
+  })
+
+  it('does not make a second cleanup for a sender already handled', async () => {
+    const { service, store } = setupUnsub()
+    store.recordUnsubscribe(record('news@dailydigest.example', 10))
+    await service.checkUnsubscribes()
+    await service.checkUnsubscribes()
+    expect(store.cleanup).toHaveLength(1)
+  })
+})
+
+describe('free up space guide', () => {
+  const MB = 1024 * 1024
+  const big = (id: string, mb: number): MailMessage => ({
+    id, accountId: 'me@x.com', from: { name: 'Photos Inc', email: 'p@x.example' }, subject: `Holiday ${id}`, date: '2026-01-01T00:00:00Z',
+    labels: ['INBOX'], isUnread: false, sizeBytes: mb * MB,
+  })
+
+  /** A mailbox where the app is told which messages are huge, large and medium, whatever the query says. */
+  class SpaceProvider extends CountingProvider {
+    huge = [big('h1', 30), big('h2', 50)]
+    large = Array.from({ length: 12 }, (_, i) => big(`l${i}`, 12 + i)) // 12 messages: more than the sample, so the size is an estimate
+    quota: { usedBytes: number; limitBytes?: number } | 'fail' = { usedBytes: 14 * 1024 * MB, limitBytes: 15 * 1024 * MB }
+    override async searchInbox(query: string) {
+      if (query.includes('-larger:25M')) return this.large.map((m) => m.id)
+      if (query.includes('larger:25M')) return this.huge.map((m) => m.id)
+      if (query.includes('larger:')) return []
+      return super.searchInbox(query)
+    }
+    override async getMessages(ids: string[]) {
+      const known = [...this.huge, ...this.large]
+      return ids.flatMap((id) => known.filter((m) => m.id === id))
+    }
+    async getStorageQuota() {
+      if (this.quota === 'fail') throw new Error('no permission')
+      return { ...this.quota, driveBytes: 0, driveTrashBytes: 0 }
+    }
+  }
+  const setupSpace = () => {
+    const provider = new SpaceProvider(0)
+    return { provider, store: new FakeStore(), service: new OrganizerService(() => provider, new FakeStore() as unknown as Store) }
+  }
+
+  it('lists what is worth clearing, biggest first, with sizes', async () => {
+    const { service } = setupSpace()
+    const guide = await service.spaceGuide()
+    expect(guide.quota).toEqual({ usedBytes: 14 * 1024 * MB, limitBytes: 15 * 1024 * MB })
+    expect(guide.candidates.map((c) => c.id)).toEqual(['attachments-10', 'attachments-25']) // by total size, so 12 medium messages outweigh 2 huge ones; empty ones are left out
+
+    const [large, huge] = guide.candidates
+    expect(huge).toMatchObject({ count: 2, bytes: 80 * MB, bytesAreEstimate: false })
+    expect(huge.samples.map((s) => s.sizeBytes)).toEqual([50 * MB, 30 * MB]) // examples, biggest first
+    expect(large.count).toBe(12)
+    expect(large.bytesAreEstimate).toBe(true)
+    expect(large.bytes).toBeGreaterThan(12 * 12 * MB) // about the average of a sample times 12
+    expect(large.bytes).toBeLessThan(12 * 23 * MB)
+  })
+
+  it('still lists candidates when Gmail cannot report storage', async () => {
+    const { service, provider } = setupSpace()
+    provider.quota = 'fail'
+    const guide = await service.spaceGuide()
+    expect(guide.quota).toBeNull()
+    expect(guide.candidates).toHaveLength(2)
+  })
+
+  it('moves a candidate to Trash with the app’s own search, and records it', async () => {
+    const { provider, store } = setupSpace()
+    const service = new OrganizerService(() => provider, store as unknown as Store)
+    const entry = await service.cleanSpace('attachments-25', 2)
+    expect(entry).toMatchObject({ messageCount: 2, move: 'trash' })
+    expect(store.activity[0]).toMatchObject({ ruleName: 'Free up space: Attachments over 25 MB', move: 'trash' })
+    expect(store.activity[0].ruleId).toBeUndefined() // not a saved rule
+    await expect(service.cleanSpace('anything-else', 1)).rejects.toThrow('isn’t something the guide suggested')
+  })
+
+  it('refuses when far more matches than were shown have appeared', async () => {
+    const { provider, store } = setupSpace()
+    const service = new OrganizerService(() => provider, store as unknown as Store)
+    provider.huge = Array.from({ length: 80 }, (_, i) => big(`h${i}`, 30))
+    await expect(service.cleanSpace('attachments-25', 2)).rejects.toThrow(/More mail matches now/)
+  })
+
+  it('remembers the answer until mail changes', async () => {
+    const { service, provider } = setupSpace()
+    const first = await service.spaceGuide()
+    provider.huge = []
+    expect(await service.spaceGuide()).toBe(first) // not searched again
+    await service.cleanSpace('attachments-10', 12)
+    expect((await service.spaceGuide()).candidates.map((c) => c.id)).toEqual(['attachments-10']) // a clean-up makes it look again
+  })
+})
+
+describe('suggestions', () => {
+  const from = (email: string, total: number, read: number, unsubscribe: boolean): MailMessage[] =>
+    Array.from({ length: total }, (_, i) => ({
+      id: `${email}-${i}`, accountId: 'me@x.com', from: { name: email.split('@')[0], email }, subject: 's', date: new Date(Date.now() - i * 3_600_000).toISOString(),
+      labels: ['INBOX'], isUnread: i >= read, sizeBytes: 1000, ...(unsubscribe && { listUnsubscribe: '<https://x.example/u>' }),
+    }))
+
+  class StubProvider extends CountingProvider {
+    private mail: MailMessage[]
+    constructor(mail: MailMessage[]) { super(0); this.mail = mail }
+    override async listInboxIds(unreadOnly: boolean) { return this.mail.filter((m) => !unreadOnly || m.isUnread).map((m) => m.id) }
+    override async getMessages(ids: string[]) { return this.mail.filter((m) => ids.includes(m.id)) }
+  }
+
+  const setupSuggest = () => {
+    const provider = new StubProvider([
+      ...from('never@a.example', 20, 0, true), // never opened, offers unsubscribe
+      ...from('rare@c.example', 12, 2, true), // opened 2 of 12: 17%, under the newsletter threshold
+      ...from('some@b.example', 10, 1, false), // opened 10% of something with no unsubscribe: not rare enough
+      ...from('few@d.example', 5, 0, true), // never opened, but only 5 messages
+      ...from('read@e.example', 9, 9, true), // all read
+    ])
+    const store = new FakeStore()
+    return { provider, store, service: new OrganizerService(() => provider, store as unknown as Store) }
+  }
+
+  it('suggests only senders with plenty of mail that is hardly ever opened, with the reason', async () => {
+    const { service } = setupSuggest()
+    const result = await service.suggestions()
+    expect(result.items.map((s) => s.email)).toEqual(['never@a.example', 'rare@c.example'])
+    expect(result.items[0]).toMatchObject({ id: 'sender:never@a.example', count: 20, hasUnsubscribe: true, why: 'You haven’t opened any of their 20 emails. They offer an unsubscribe link.' })
+    expect(result.items[1].why).toBe('You’ve opened only 2 of their 12 emails. They offer an unsubscribe link.')
+    expect(result).toMatchObject({ scanned: 56, inboxTotal: 56, complete: true })
+  })
+
+  it('does not suggest a sender that was dismissed or already has a cleanup', async () => {
+    const { service, store } = setupSuggest()
+    service.dismissSuggestion('sender:rare@c.example')
+    store.saveCleanupRule({ id: 'mine', name: 'Mine', filters: { from: 'never@a.example' }, actions: [{ type: 'archive' }] })
+    expect((await service.suggestions()).items).toEqual([])
+  })
+
+  it('archives a sender from now on: an automatic cleanup that starts right away', async () => {
+    const provider = new CountingProvider(300)
+    const store = new FakeStore()
+    const service = new OrganizerService(() => provider, store as unknown as Store)
+    service.autoArchiveSender('News@DailyDigest.example')
+    service.autoArchiveSender('news@dailydigest.example') // twice is still one rule
+    expect(store.cleanup).toEqual([{ id: 'auto-archive-news@dailydigest.example', name: 'Archive mail from news@dailydigest.example', filters: { from: 'news@dailydigest.example' }, actions: [{ type: 'archive' }], auto: true }])
+    await service.runAutomatic()
+    expect((await provider.searchInbox!('in:inbox from:(news@dailydigest.example)')).length).toBe(0)
+    expect(store.activity[0]).toMatchObject({ move: 'archive', automatic: true })
+  })
+
+  it('refuses something that is not an address', async () => {
+    const { service } = setupSuggest()
+    expect(() => service.autoArchiveSender('a@b.com) OR (in:inbox')).toThrow(/valid sender/)
+  })
+})
+
+describe('sharing rules', () => {
+  const setupShare = () => {
+    const store = new FakeStore()
+    return { store, service: new OrganizerService(() => new CountingProvider(10), store as unknown as Store) }
+  }
+  const cleanup = (over: Partial<CleanupRule> = {}): CleanupRule => ({ id: 'c1', name: 'Shop', filters: { from: 'deals@shopmart.example' }, actions: [{ type: 'trash' }], ...over })
+
+  it('exports every rule and cleanup', () => {
+    const { service, store } = setupShare()
+    store.saveCleanupRule(cleanup())
+    store.saveRule({ id: 'r1', name: 'Receipts', enabled: true, match: 'all', conditions: [{ field: 'category', op: 'equals', value: 'receipt' }], actions: [{ type: 'addLabel', label: 'Receipts' }] })
+    const out = service.exportRules()
+    expect(out).toMatchObject({ app: 'email-organizer', version: 1 })
+    expect(out.cleanupRules.map((r) => r.name)).toEqual(['Shop'])
+    expect(out.rules.map((r) => r.name)).toEqual(['Archive old promotions', 'Label receipts', 'Receipts']) // the two default rules, then this one
+  })
+
+  it('imports them on another computer with new ids, and a round trip changes nothing', () => {
+    const { service: a, store: storeA } = setupShare()
+    storeA.saveCleanupRule(cleanup())
+    const file = JSON.parse(JSON.stringify(a.exportRules()))
+    const { service: b, store: storeB } = setupShare()
+    expect(b.importRules(file)).toEqual({ added: 3, skipped: [] }) // the cleanup and A's two default rules
+    expect(storeB.cleanup).toHaveLength(1)
+    expect(storeB.cleanup[0]).toMatchObject({ name: 'Shop', filters: { from: 'deals@shopmart.example' }, actions: [{ type: 'trash' }] })
+    expect(storeB.cleanup[0].id).not.toBe('c1')
+  })
+
+  it('never lets an imported rule run by itself or carry someone else’s consent', () => {
+    const { service, store } = setupShare()
+    service.importRules({
+      app: 'email-organizer', version: 1, cleanupRules: [cleanup({ auto: true, runOnce: true, allowBroad: true }), cleanup({ name: 'Auto', auto: true })],
+      rules: [{ id: 'r', name: 'R', enabled: true, auto: true, match: 'all', conditions: [{ field: 'senderDomain', op: 'equals', value: 'a.com' }], actions: [{ type: 'archive' }] }],
+    })
+    expect(store.cleanup.some((r) => r.auto || r.runOnce || r.allowBroad)).toBe(false)
+    expect(store.rules.some((r) => r.auto)).toBe(false)
+  })
+
+  it('skips rules that fail the checks and says why, keeping the good ones', () => {
+    const { service, store } = setupShare()
+    const result = service.importRules({
+      app: 'email-organizer', version: 1,
+      cleanupRules: [
+        cleanup({ name: 'Good' }),
+        cleanup({ name: 'No filter', filters: {} }),
+        cleanup({ name: 'Everyday trash', filters: { olderThan: { value: 1, unit: 'y' } }, allowBroad: true }), // consent is stripped, so it's refused
+        { name: 'Garbage' } as never,
+      ],
+      rules: [{ name: 'Bad rule' } as never],
+    })
+    expect(result.added).toBe(1)
+    expect(result.skipped.map((s) => s.name)).toEqual(['No filter', 'Everyday trash', 'Garbage', 'Bad rule'])
+    expect(result.skipped.every((s) => s.reason.length > 0)).toBe(true)
+    expect(store.cleanup.map((r) => r.name)).toEqual(['Good'])
+  })
+
+  it('refuses a file that isn’t a rules file, and reads only so many rules', () => {
+    const { service, store } = setupShare()
+    for (const bad of [null, 'text', 5, {}, { app: 'something-else', cleanupRules: [] }, { app: 'email-organizer', cleanupRules: 'x' }]) {
+      expect(() => service.importRules(bad)).toThrow('isn’t a rules file')
+    }
+    const many = Array.from({ length: 500 }, (_, i) => cleanup({ name: `r${i}` }))
+    expect(service.importRules({ app: 'email-organizer', version: 1, cleanupRules: many, rules: [] }).added).toBe(200)
+    expect(store.cleanup).toHaveLength(200)
+  })
+})
+
+describe('duplicate messages', () => {
+  const copy = (id: string, over: Partial<MailMessage> = {}): MailMessage => ({
+    id, accountId: 'me@x.com', from: { name: 'Shop', email: 'shop@x.example' }, subject: 'Your order', date: '2026-03-01T10:15:20Z',
+    labels: ['INBOX'], isUnread: true, sizeBytes: 4000, ...over,
+  })
+  class StubProvider extends CountingProvider {
+    mail: MailMessage[]
+    constructor(mail: MailMessage[]) { super(0); this.mail = mail }
+    override async listInboxIds(unreadOnly: boolean) { return this.mail.filter((m) => m.labels.includes('INBOX') && (!unreadOnly || m.isUnread)).map((m) => m.id) }
+    override async getMessages(ids: string[]) { return this.mail.filter((m) => ids.includes(m.id)) }
+    override async applyActions(ids: string[], actions: Parameters<DemoProvider['applyActions']>[1]) { this.mail = this.mail.map((m) => (ids.includes(m.id) ? applyActionsToMessage(m, actions) : m)) }
+  }
+  const setupDup = () => {
+    const provider = new StubProvider([copy('a', { date: '2026-03-01T10:15:05Z' }), copy('b', { date: '2026-03-01T10:15:40Z' }), copy('c'), copy('solo', { subject: 'Different' })])
+    const store = new FakeStore()
+    return { provider, store, service: new OrganizerService(() => provider, store as unknown as Store) }
+  }
+
+  it('reports the extra copies, with sizes and examples', async () => {
+    const { service } = setupDup()
+    expect(await service.duplicates()).toEqual({
+      count: 2, bytes: 8000, groups: 1, scanned: 4, complete: true,
+      examples: [{ from: 'Shop', subject: 'Your order', copies: 3 }],
+    })
+  })
+
+  it('trashes the extras, keeps the newest, and can be undone', async () => {
+    const { service, provider, store } = setupDup()
+    await service.overview()
+    const entry = await service.trashDuplicates(2)
+    expect(entry).toMatchObject({ messageCount: 2, move: 'trash', bytes: 8000 })
+    expect(store.activity[0].ruleName).toBe('Remove duplicate messages')
+    expect(provider.mail.filter((m) => m.labels.includes('INBOX')).map((m) => m.id).sort()).toEqual(['b', 'solo'])
+    expect((await service.duplicates()).count).toBe(0)
+
+    await service.undo(entry.id as number)
+    expect(provider.mail.filter((m) => m.labels.includes('INBOX'))).toHaveLength(4)
+  })
+
+  it('refuses when many more duplicates are found than were shown', async () => {
+    const { service, provider } = setupDup()
+    provider.mail = [...provider.mail, ...Array.from({ length: 60 }, (_, i) => copy(`n${i}`, { subject: 'Newsletter' }))]
+    await expect(service.trashDuplicates(2)).rejects.toThrow(/More duplicates are listed now/)
+  })
+})
+
+describe('describing an automatic run', () => {
+  const entry = (messageCount: number, move: 'trash' | 'archive' | null) => ({ id: 1, at: '', ruleName: 'r', messageCount, undone: false, move })
+
+  it('says what was done in plain words', () => {
+    expect(describeRun([])).toBe('')
+    expect(describeRun([entry(212, 'archive')])).toBe('Archived 212 messages')
+    expect(describeRun([entry(1, 'archive')])).toBe('Archived 1 message')
+    expect(describeRun([entry(30, 'trash'), entry(2, 'trash')])).toBe('Moved 32 to Trash')
+    expect(describeRun([entry(212, 'archive'), entry(30, 'trash')])).toBe('Archived 212 messages and moved 30 to Trash')
+    expect(describeRun([entry(5, null), entry(10, 'archive'), entry(3, 'trash')])).toBe('Archived 10 messages, moved 3 to Trash and updated 5 messages')
+  })
+
+  it('reports it on the automation status, empty when nothing changed', async () => {
+    const provider = new CountingProvider(300)
+    const store = new FakeStore()
+    const service = new OrganizerService(() => provider, store as unknown as Store)
+    store.saveCleanupRule({ id: 'a', name: 'A', filters: { from: 'news@dailydigest.example' }, actions: [{ type: 'archive' }], auto: true })
+    const first = await service.runAutomatic()
+    expect(first.lastChanged).toBeGreaterThan(0)
+    expect(first.lastSummary).toBe(`Archived ${first.lastChanged} messages`)
+    const second = await service.runAutomatic()
+    expect(second).toMatchObject({ lastChanged: 0, lastSummary: '' })
   })
 })

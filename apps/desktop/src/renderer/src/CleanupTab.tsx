@@ -10,6 +10,7 @@ import { formatBytes } from './format'
 import { Icon, hue } from './Icons'
 import { RuleEditor } from './RuleEditor'
 import { TypeToggle, type TypeToggleProps } from './TypeToggle'
+import { PlainEnglishRule } from './PlainEnglishRule'
 import { ScannedPreview, ScannedRuleRow, useScannedRules } from './ScannedRules'
 
 const IDEA_HUES = [330, 200, 12, 155]
@@ -178,7 +179,15 @@ function Editor({ initial, onSave, onCancel, typeToggle }: { initial: CleanupRul
 /** A starting point for the editor, such as the filters for one sender. */
 export interface CleanupPrefill { name: string; filters: CleanupFilters; actions: MailAction[] }
 
-export function CleanupTab({ onApplied, scanning, prefill, onPrefillUsed }: { onApplied: () => void; scanning: boolean; prefill?: CleanupPrefill | null; onPrefillUsed?: () => void }) {
+export function CleanupTab({ onApplied: onAppliedOutside, scanning, prefill, onPrefillUsed, onGoToAccount }: {
+  onApplied: () => void; scanning: boolean; prefill?: CleanupPrefill | null; onPrefillUsed?: () => void; onGoToAccount: () => void
+}) {
+  // What a plain-English draft understood, shown above the form until it's saved or cancelled.
+  const [draftNote, setDraftNote] = useState<{ note: string; warnings: string[] } | null>(null)
+  // What each rule has handled so far, shown on its row; refreshed whenever a rule has just run.
+  const [handled, setHandled] = useState<Record<string, { messages: number }>>({})
+  const loadHandled = () => api.impact().then((i) => setHandled(i.byRule), () => {})
+  const onApplied = () => { onAppliedOutside(); loadHandled() }
   const scanned = useScannedRules(onApplied)
   const [rules, setRules] = useState<CleanupRule[]>([])
   const [editing, setEditing] = useState<CleanupRule | null>(null)
@@ -191,6 +200,7 @@ export function CleanupTab({ onApplied, scanning, prefill, onPrefillUsed }: { on
   const [once, setOnce] = useState<{ rule: CleanupRule; count: number } | null>(null)
 
   const anyEditing = !!editing || !!scanned.editing
+  useEffect(() => { if (!editing) setDraftNote(null) }, [editing])
   // What was typed in the rule name, carried across when a new rule switches between the two forms.
   const [carriedName, setCarriedName] = useState('')
   const blankNew = (r: CleanupRule) => !rules.some((x) => x.id === r.id) && Object.keys(r.filters).length === 0 && r.actions.length === 0
@@ -201,7 +211,7 @@ export function CleanupTab({ onApplied, scanning, prefill, onPrefillUsed }: { on
     if (byType) { setEditing(null); scanned.setEditing('new') } else { scanned.setEditing(null); setEditing(newBlankRule(name)) }
   }
   const load = () => api.cleanupRules().then(setRules)
-  useEffect(() => { load() }, [])
+  useEffect(() => { load(); loadHandled() }, [])
   useEffect(() => {
     if (!prefill) return
     setDone(null)
@@ -253,7 +263,19 @@ export function CleanupTab({ onApplied, scanning, prefill, onPrefillUsed }: { on
       </p>
       {(error ?? scanned.error) && <div className="notice error">{error ?? scanned.error}</div>}
       {done && <div className="notice" style={{ color: 'var(--ok)' }}>{done}</div>}
-      <AutomationNotice active={rules.some((r) => r.auto) || scanned.rules.some((r) => r.auto && r.enabled)} onRan={() => { load(); scanned.load() }} />
+      <AutomationNotice active={rules.some((r) => r.auto) || scanned.rules.some((r) => r.auto && r.enabled)} onRan={() => { load(); scanned.load(); loadHandled() }} />
+
+      <PlainEnglishRule onGoToAccount={onGoToAccount} onDraft={(d) => {
+        setDone(null); setOnce(null); setPreview(null); scanned.setEditing(null)
+        setDraftNote({ note: d.note, warnings: d.warnings })
+        setEditing({ id: crypto.randomUUID(), name: d.name, filters: d.filters, actions: d.actions })
+      }} />
+      {editing && draftNote && (
+        <div className={`notice${draftNote.warnings.length ? ' danger' : ''}`} role="status">
+          <b>Here’s what I understood:</b> {draftNote.note} Check the details below before you save. Nothing has been changed.
+          {draftNote.warnings.map((w) => <div key={w} className="error">{w}</div>)}
+        </div>
+      )}
 
       {once && (
         <section className="card run-confirm" style={hue(12)}>
@@ -316,7 +338,10 @@ export function CleanupTab({ onApplied, scanning, prefill, onPrefillUsed }: { on
               <b>{rule.name}</b>
               {rule.runOnce && <span className="pill once" title="Runs one time, then removes itself">Runs once</span>}
               {rule.auto && <span className="pill ok" title="Applied on its own, about every 30 minutes while the app is open">Automatic</span>}
-              <div className="muted">{describeFilters(rule.filters)} → {describeActions(rule.actions)} <MoveChips actions={rule.actions} /></div>
+              <div className="muted">
+                {describeFilters(rule.filters)} → {describeActions(rule.actions)} <MoveChips actions={rule.actions} />
+                {handled[rule.id]?.messages ? <span className="handled">Handled {handled[rule.id].messages.toLocaleString()} {handled[rule.id].messages === 1 ? 'message' : 'messages'}</span> : null}
+              </div>
             </div>
             <div className="actions">
               {rule.runOnce ? (
@@ -339,7 +364,22 @@ export function CleanupTab({ onApplied, scanning, prefill, onPrefillUsed }: { on
             </div>
           </div>
         ))}
-        {scanned.rules.map((rule) => <ScannedRuleRow key={rule.id} rule={rule} h={scanned} locked={!!busy || scanned.busy} />)}
+        {scanned.rules.map((rule) => <ScannedRuleRow key={rule.id} rule={rule} h={scanned} locked={!!busy || scanned.busy} handled={handled[rule.id]?.messages} />)}
+        <p className="rule-alt" style={{ margin: '12px 0 0', paddingTop: 12, borderTop: '1px solid var(--line)' }}>
+          Share your rules:{' '}
+          <button className="link-btn" disabled={!!busy || rules.length + scanned.rules.length === 0} onClick={() => run('export', async () => {
+            const saved = await api.exportRules()
+            if (saved) setDone(`Saved ${saved.count} ${saved.count === 1 ? 'rule' : 'rules'} to ${saved.path}.`)
+          })}>Export</button>
+          {' · '}
+          <button className="link-btn" disabled={!!busy || anyEditing} onClick={() => run('import', async () => {
+            const result = await api.importRules()
+            if (!result) return
+            await load(); await scanned.load()
+            const skipped = result.skipped.length
+            setDone(`Added ${result.added} ${result.added === 1 ? 'rule' : 'rules'}. None of them run automatically until you turn that on.${skipped ? ` Skipped ${skipped}: ${result.skipped.slice(0, 3).map((s) => `“${s.name}” (${s.reason})`).join('; ')}${skipped > 3 ? '…' : ''}` : ''}`)
+          })}>Import</button>
+        </p>
       </section>
 
       <ScannedPreview h={scanned} scanning={scanning} />

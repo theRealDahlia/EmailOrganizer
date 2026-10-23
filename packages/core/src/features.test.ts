@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { inverseActions, buildOverview, buildSenders, buildSubscriptions, isPublicHttpsUrl, parseListUnsubscribe, validateRule, type MailMessage, type Rule } from './index'
+import { inverseActions, buildOverview, buildSenders, findDuplicates, buildSubscriptions, isPublicHttpsUrl, parseListUnsubscribe, validateRule, type MailMessage, type Rule } from './index'
 
 const rule = (over: Partial<Rule> = {}): Rule => ({
   id: 'r', name: 'Test', enabled: true, match: 'all',
@@ -104,5 +104,29 @@ describe('buildSenders', () => {
     const many = Array.from({ length: 40 }, (_, i) => msg(String(i), `s${i}@x.com`, `S${i}`, '2026-01-01T00:00:00Z'))
     expect(buildSenders(many)).toHaveLength(40)
     expect(buildOverview(many).topSenders).toHaveLength(10)
+  })
+})
+
+describe('findDuplicates', () => {
+  const m = (id: string, over: Partial<MailMessage> = {}): MailMessage => ({
+    id, accountId: 'a', from: { name: 'S', email: 's@x.com' }, subject: 'Your receipt', date: '2026-03-01T10:15:20Z', labels: ['INBOX'], isUnread: false, sizeBytes: 5000, ...over,
+  })
+
+  it('finds copies of the same message and keeps the newest', () => {
+    const groups = findDuplicates([m('a', { date: '2026-03-01T10:15:05Z' }), m('b', { date: '2026-03-01T10:15:40Z' }), m('c')])
+    expect(groups).toHaveLength(1)
+    expect(groups[0].keep.id).toBe('b')
+    expect(groups[0].extras.map((x) => x.id).sort()).toEqual(['a', 'c'])
+  })
+
+  it('does not call similar mail a duplicate', () => {
+    expect(findDuplicates([
+      m('a'), m('differentMinute', { date: '2026-03-01T10:16:20Z' }), m('otherSender', { from: { name: 'S', email: 'o@x.com' } }),
+      m('otherSubject', { subject: 'Your invoice' }), m('otherSize', { sizeBytes: 6000 }),
+    ])).toEqual([])
+  })
+
+  it('ignores the case of the sender address', () => {
+    expect(findDuplicates([m('a'), m('b', { from: { name: 'S', email: 'S@X.com' } })])).toHaveLength(1)
   })
 })

@@ -1,4 +1,5 @@
 import { mailMove, type MailAction, type MailMove } from '@organizer/core'
+import type { UnsubscribeRecord } from '../../shared'
 import { Icon } from './Icons'
 
 const MOVES: Record<MailMove, { icon: string; short: string; long: string; hint: string }> = {
@@ -20,4 +21,14 @@ export function MoveChip({ move, long }: { move: MailMove; long?: boolean }) {
 export function MoveChips({ actions, long }: { actions: MailAction[]; long?: boolean }) {
   const move = mailMove(actions)
   return move ? <MoveChip move={move} long={long} /> : null
+}
+
+/** Where an unsubscribe stands: sent, confirmed to have worked, or ignored by the sender (so their mail is archived). */
+export function UnsubStatus({ record }: { record: UnsubscribeRecord }) {
+  const day = new Date(record.at).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+  if (record.status === 'worked') return <span className="pill ok" title={`No mail from them since a week after you unsubscribed on ${day}.`}>Unsubscribed · they stopped</span>
+  if (record.status === 'still_sending') {
+    return <span className="pill warn" title="They kept sending after you unsubscribed, so the app now archives their mail automatically. See Cleanup.">Still sending · now auto-archived</span>
+  }
+  return <span className="pill scanned" title="The app checks a week later whether they stopped.">Unsubscribed {day} · checking in a week</span>
 }

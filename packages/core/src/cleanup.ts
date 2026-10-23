@@ -203,6 +203,7 @@ export function matchesGmailQuery(m: MailMessage, query: string, now = Date.now(
       case 'in': ok = val === 'inbox' ? m.labels.includes('INBOX') : false; break
       case 'is': ok = val === 'unread' ? m.isUnread : val === 'read' ? !m.isUnread : false; break
       case 'category': ok = tabOf() === val; break
+      case 'after': ok = Date.parse(m.date) > Number(val) * 1000; break // epoch seconds, as Gmail takes them
       case 'older_than': {
         const mm = val.match(/^(\d+)([dmy])$/)
         ok = !!mm && (now - Date.parse(m.date)) / 86_400_000 > days(Number(mm[1]), mm[2])

@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
-import { THEME_PREFS, type ThemePref } from '../shared'
+import { THEME_PREFS, type BackgroundPrefs, type ThemePref } from '../shared'
 
 /** App preferences kept in a small JSON file next to the database. Nothing sensitive goes here. */
 export class Settings {
@@ -19,6 +19,19 @@ export class Settings {
   theme(): ThemePref {
     const value = this.read()['theme']
     return THEME_PREFS.includes(value as ThemePref) ? (value as ThemePref) : 'system'
+  }
+
+  background(): BackgroundPrefs {
+    const raw = this.read()['background']
+    const b = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {}
+    return { openAtLogin: b['openAtLogin'] === true, keepRunning: b['keepRunning'] === true, notify: b['notify'] === true }
+  }
+
+  setBackground(change: Partial<BackgroundPrefs>): BackgroundPrefs {
+    const next = { ...this.background() }
+    for (const key of ['openAtLogin', 'keepRunning', 'notify'] as const) if (typeof change[key] === 'boolean') next[key] = change[key]!
+    writeFileSync(this.file, JSON.stringify({ ...this.read(), background: next }, null, 2))
+    return next
   }
 
   setTheme(theme: ThemePref): void {

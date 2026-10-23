@@ -39,3 +39,30 @@ describe('settings', () => {
     expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual({ other: 1, theme: 'light' })
   })
 })
+
+describe('background settings', () => {
+  it('is all off until the user turns something on', () => {
+    expect(new Settings(file()).background()).toEqual({ openAtLogin: false, keepRunning: false, notify: false })
+  })
+
+  it('changes only what it is told to, and remembers it alongside the theme', () => {
+    const path = file()
+    const settings = new Settings(path)
+    settings.setTheme('dark')
+    expect(settings.setBackground({ keepRunning: true })).toEqual({ openAtLogin: false, keepRunning: true, notify: false })
+    expect(settings.setBackground({ notify: true })).toEqual({ openAtLogin: false, keepRunning: true, notify: true })
+    const reopened = new Settings(path)
+    expect(reopened.background()).toEqual({ openAtLogin: false, keepRunning: true, notify: true })
+    expect(reopened.theme()).toBe('dark')
+  })
+
+  it('ignores values that aren’t true or false, and a damaged section', () => {
+    const path = file()
+    const settings = new Settings(path)
+    expect(settings.setBackground({ openAtLogin: 'yes' as never, keepRunning: 1 as never })).toEqual({ openAtLogin: false, keepRunning: false, notify: false })
+    writeFileSync(path, JSON.stringify({ background: 'nope' }))
+    expect(new Settings(path).background()).toEqual({ openAtLogin: false, keepRunning: false, notify: false })
+    writeFileSync(path, JSON.stringify({ background: { openAtLogin: 'true', keepRunning: true } }))
+    expect(new Settings(path).background()).toEqual({ openAtLogin: false, keepRunning: true, notify: false })
+  })
+})

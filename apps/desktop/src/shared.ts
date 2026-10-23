@@ -1,4 +1,4 @@
-import type { CleanupRule, InboxCounts, MailMessage, Overview, PlannedChange, Rule, SenderStat, StorageQuota, Subscription } from '@organizer/core'
+import type { CleanupFilters, CleanupRule, InboxCounts, MailAction, MailMessage, Overview, PlannedChange, Rule, SenderStat, StorageQuota, Subscription } from '@organizer/core'
 
 /**
  * An automatic run won't move more than this many messages to Trash in one go. A bigger match is left for the
@@ -18,6 +18,128 @@ export interface ActivityEntry {
   undone: boolean
   /** a run-once cleanup finished and was removed */
   ruleRemoved?: boolean
+  /** the saved rule or cleanup that made this change, when there was one */
+  ruleId?: string
+  /** about how much mail this moved, in bytes (from messages the app already knew the size of) */
+  bytes?: number
+  /** an automatic run made this change */
+  automatic?: boolean
+  /** where it sent the mail, if it moved any */
+  move?: 'trash' | 'archive' | null
+}
+
+/** What the app has done for the user over a period. Undone changes are not counted. */
+export interface ImpactTotals {
+  /** messages archived, trashed, labelled or marked read by rules and clean-ups */
+  messages: number
+  /** about how much mail was moved to Trash, in bytes (Gmail frees the space once Trash is emptied) */
+  bytesTrashed: number
+  trashed: number
+  archived: number
+  /** messages handled by automatic runs */
+  automatic: number
+  runs: number
+  unsubscribes: number
+}
+
+export interface ImpactSummary {
+  month: ImpactTotals
+  all: ImpactTotals
+  /** every saved rule or cleanup's lifetime total, for showing "handled N messages" on its row */
+  byRule: Record<string, { messages: number }>
+}
+
+/** Messages that look like the same one arriving more than once. Based on the scanned mail. */
+export interface DuplicatesResult {
+  /** how many extra copies could go, keeping the newest of each */
+  count: number
+  bytes: number
+  groups: number
+  examples: { from: string; subject: string; copies: number }[]
+  scanned: number
+  complete: boolean
+}
+
+/** Everything the user has set up, as a file they can keep, move to another computer or share. */
+export interface RulesExport {
+  app: 'email-organizer'
+  version: 1
+  exportedAt: string
+  cleanupRules: CleanupRule[]
+  rules: Rule[]
+}
+
+export interface ImportResult {
+  added: number
+  skipped: { name: string; reason: string }[]
+}
+
+/** A rule drafted from a sentence. Nothing is saved: the user reviews it in the normal rule form. */
+export interface AiRuleDraft {
+  name: string
+  filters: CleanupFilters
+  actions: MailAction[]
+  /** the rule in one plain sentence, so the user can check it matches what they meant */
+  note: string
+  /** things the form will refuse to save as drafted (for example a Trash rule that is too broad) */
+  warnings: string[]
+}
+
+/** A sender the user barely reads, offered as a candidate for an archive rule or an unsubscribe. */
+export interface Suggestion {
+  /** stable, so a dismissal sticks */
+  id: string
+  email: string
+  name: string
+  count: number
+  unread: number
+  hasUnsubscribe: boolean
+  bytes: number
+  /** the reason, in plain words */
+  why: string
+}
+
+export interface SuggestionsResult {
+  items: Suggestion[]
+  /** inbox messages the suggestions are based on */
+  scanned: number
+  inboxTotal: number
+  complete: boolean
+}
+
+/** One thing worth clearing to free storage, found with a Gmail search. */
+export interface SpaceCandidate {
+  id: string
+  title: string
+  blurb: string
+  count: number
+  /** about how much space these take: exact for a handful, otherwise worked out from a sample */
+  bytes: number
+  bytesAreEstimate: boolean
+  /** the biggest few of the sampled messages, as examples */
+  samples: { from: string; subject: string; date: string; sizeBytes: number }[]
+}
+
+export interface SpaceGuide {
+  /** the account's storage (shared with Drive and Photos); null when Gmail can't report it */
+  quota: { usedBytes: number; limitBytes?: number } | null
+  /** biggest first */
+  candidates: SpaceCandidate[]
+}
+
+export type UnsubscribeStatus = 'waiting' | 'worked' | 'still_sending'
+
+/** An unsubscribe the user asked for, and whether the sender really stopped. */
+export interface UnsubscribeRecord {
+  email: string
+  name: string
+  /** ISO time the unsubscribe was sent or opened */
+  at: string
+  method: 'oneClick' | 'openLink' | 'openMail'
+  status: UnsubscribeStatus
+  checkedAt?: string
+  /** the automatic archive cleanup made because they kept sending */
+  ruleId?: string
 }
 
 /** What the background runner of automatic rules and cleanups has done and left for the user. */
@@ -30,6 +152,25 @@ export interface AutomationStatus {
   errors: { name: string; message: string; kind: 'cleanup' | 'rule' }[]
   /** how many automatic runs have changed mail so far this session */
   runs: number
+  /** messages the last run changed, and a plain sentence about it ("Archived 212 messages and moved 30 to Trash"); empty when it changed none */
+  lastChanged: number
+  lastSummary: string
+}
+
+/** What the app keeps doing when its window is closed. All off until the user turns them on. */
+export interface BackgroundPrefs {
+  /** start when the user signs in to their computer */
+  openAtLogin: boolean
+  /** stay in the menu bar or tray after the window closes, so automatic rules keep running */
+  keepRunning: boolean
+  /** show a notification when an automatic run changed mail while the app wasn't in front */
+  notify: boolean
+}
+
+export interface BackgroundState {
+  prefs: BackgroundPrefs
+  /** the operating system can start apps at login (macOS and Windows) */
+  loginItemSupported: boolean
 }
 
 /** Overview of the scanned inbox, plus whether every inbox message was scanned. */
@@ -162,6 +303,37 @@ export interface OrganizerApi {
   setTheme(theme: ThemePref): Promise<ThemePref>
   /** How many inbox messages a cleanup would change right now, found by Gmail search: no download, no preview. */
   cleanupCount(ruleId: string): Promise<{ count: number; query: string }>
+  /** Extra copies of the same message, found in the scanned mail. */
+  duplicates(): Promise<DuplicatesResult>
+  /** Moves the extra copies to Trash (undoable), keeping the newest of each. */
+  trashDuplicates(expectedCount: number): Promise<ActivityEntry>
+  getBackground(): Promise<BackgroundState>
+  /** Changes what runs in the background, takes effect straight away, and returns the new state. */
+  setBackground(prefs: Partial<BackgroundPrefs>): Promise<BackgroundState>
+  /** Saves every rule and cleanup to a file the user picks. Null if they cancel. */
+  exportRules(): Promise<{ path: string; count: number } | null>
+  /** Adds the rules from a file the user picks. Imported rules are never automatic or run-once. Null if they cancel. */
+  importRules(): Promise<ImportResult | null>
+  /** Whether an Anthropic API key is saved, which switches on plain-English rules. */
+  aiStatus(): Promise<{ configured: boolean }>
+  saveAiKey(key: string): Promise<void>
+  removeAiKey(): Promise<void>
+  /** Drafts a rule from a sentence. Only that sentence leaves the computer. Throws a readable message on failure. */
+  draftRule(sentence: string): Promise<AiRuleDraft>
+  /** Senders the user barely reads, with the reason. Based on the scanned mail. */
+  suggestions(): Promise<SuggestionsResult>
+  /** Hides a suggestion for good. */
+  dismissSuggestion(id: string): Promise<void>
+  /** Creates an automatic cleanup that archives this sender's mail, and starts it. Safe: archiving is undoable. */
+  autoArchiveSender(email: string): Promise<void>
+  /** What is worth clearing to free space, biggest first. Found by Gmail search, so it covers the whole inbox. */
+  spaceGuide(): Promise<SpaceGuide>
+  /** Moves one candidate's mail to Trash (undoable). Refuses if far more matches than `expectedCount` appeared. */
+  cleanSpace(id: string, expectedCount: number): Promise<ActivityEntry>
+  /** What the app has done, this month and all time, and what each rule has handled. */
+  impact(): Promise<ImpactSummary>
+  /** Unsubscribes the user has sent, and whether each sender stopped. */
+  unsubscribeStatus(): Promise<UnsubscribeRecord[]>
   /** What automatic rules and cleanups have done, and what they left for review. */
   automation(): Promise<AutomationStatus>
   /** Runs every automatic rule and cleanup now instead of waiting for the next scheduled run. */

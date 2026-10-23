@@ -8,16 +8,18 @@ import { SenderPanel } from './SenderPanel'
 const api = window.organizer
 const PAGE = 50
 
-type Sort = 'count' | 'unread' | 'recent' | 'name'
+type Sort = 'count' | 'unread' | 'size' | 'recent' | 'name'
 const SORTS: { value: Sort; label: string }[] = [
   { value: 'count', label: 'Most mail' },
   { value: 'unread', label: 'Most unread' },
+  { value: 'size', label: 'Largest' },
   { value: 'recent', label: 'Newest' },
   { value: 'name', label: 'A to Z' },
 ]
 const sorters: Record<Sort, (a: SenderStat, b: SenderStat) => number> = {
   count: (a, b) => b.count - a.count,
   unread: (a, b) => b.unread - a.unread || b.count - a.count,
+  size: (a, b) => b.bytes - a.bytes,
   recent: (a, b) => b.lastDate.localeCompare(a.lastDate),
   name: (a, b) => (a.name || a.email).localeCompare(b.name || b.email, undefined, { sensitivity: 'base' }),
 }
@@ -41,7 +43,9 @@ const shortDate = (iso: string) => {
 }
 
 /** Every sender in the scanned mail with how many messages each has sent, and the same quick actions as Overview. */
-export function SendersTab({ scanKey, progress, onCancel, onScanAll, onChanged, onOpenCleanup, onGoToCleanup }: {
+export function SendersTab({ scanKey, initialQuery, progress, onCancel, onScanAll, onChanged, onOpenCleanup, onGoToCleanup }: {
+  /** a search to show, such as one typed in the command palette; the object changes each time so the same text can be sent again */
+  initialQuery?: { text: string }
   /** changes whenever the scan finds more mail, so the list reloads */
   scanKey: string
   progress: ScanProgress | null
@@ -67,6 +71,7 @@ export function SendersTab({ scanKey, progress, onCancel, onScanAll, onChanged, 
   }
   useEffect(load, [scanKey])
   useEffect(() => setShown(PAGE), [query, sort, subsOnly, unreadOnly])
+  useEffect(() => { if (initialQuery) setQuery(initialQuery.text) }, [initialQuery])
 
   const rows = useMemo(() => {
     if (!data) return []
