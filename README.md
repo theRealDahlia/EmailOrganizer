@@ -1,6 +1,6 @@
-# Email Organizer
+# Sweep
 
-A local-first desktop app that organizes your mailbox. Mail is processed on your computer; there is no Email Organizer server. See [PLAN.md](PLAN.md).
+A local-first desktop app that organizes your mailbox. Mail is processed on your computer; there is no Sweep server. See [PLAN.md](PLAN.md).
 
 ## Layout
 

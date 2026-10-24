@@ -58,10 +58,10 @@ function Connect({ status, connected, headingRef, onAccountChanged, onNext }: { 
 
   return (
     <>
-      <Title headingRef={headingRef}>{connected ? 'You’re connected' : 'Welcome to Email Organizer'}</Title>
+      <Title headingRef={headingRef}>{connected ? 'You’re connected' : 'Welcome to Sweep'}</Title>
       <p className="ob-lead">See what’s filling your inbox, unsubscribe from what you never read, and keep it tidy automatically.</p>
       <ul className="ob-promises">
-        <li><Icon name="check" size={16} /><span><b>Your mail stays on this computer.</b> There is no Email Organizer server.</span></li>
+        <li><Icon name="check" size={16} /><span><b>Your mail stays on this computer.</b> There is no Sweep server.</span></li>
         <li><Icon name="check" size={16} /><span><b>It reads who sent each email and its subject,</b> never the message itself.</span></li>
         <li><Icon name="check" size={16} /><span><b>Nothing is deleted for good.</b> Moves go to Trash, and every change can be undone.</span></li>
       </ul>

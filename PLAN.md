@@ -1,4 +1,4 @@
-# Email Organizer — Plan & Features
+# Sweep — Plan & Features
 
 A tool where users connect their mailbox and get it organized: sorted, cleaned up, and kept that way, with the user always in control.
 
@@ -37,7 +37,7 @@ A tool where users connect their mailbox and get it organized: sorted, cleaned u
 
 Two deliverables in one repo:
 
-1. **The local app** — a desktop app that runs entirely on the user's machine. Mail is fetched directly from Gmail/Outlook to the device; there is no Email Organizer server holding mail, tokens, or rules.
+1. **The local app** — a desktop app that runs entirely on the user's machine. Mail is fetched directly from Gmail/Outlook to the device; there is no Sweep server holding mail, tokens, or rules.
 2. **A landing page website** — a static marketing site that explains the product, states the privacy promise, and hosts download links, docs, and the privacy policy. It never touches user mail.
 
 ## Architecture

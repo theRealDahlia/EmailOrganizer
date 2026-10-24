@@ -1,10 +1,10 @@
-# Creating a Google Cloud OAuth client for Email Organizer
+# Creating a Google Cloud OAuth client for Sweep
 
-Email Organizer talks to Gmail directly from your computer, so it needs an OAuth **client ID** that identifies the app to Google. You create one in your own Google Cloud project. It's free and takes about 10 minutes.
+Sweep talks to Gmail directly from your computer, so it needs an OAuth **client ID** that identifies the app to Google. You create one in your own Google Cloud project. It's free and takes about 10 minutes.
 
 ## 1. Create a project
 1. Go to <https://console.cloud.google.com/> and sign in.
-2. Click the project picker (top bar) → **New project** → name it `Email Organizer` → **Create**, then select it.
+2. Click the project picker (top bar) → **New project** → name it `Sweep` → **Create**, then select it.
 
 ## 2. Enable the Gmail API
 1. Open <https://console.cloud.google.com/apis/library/gmail.googleapis.com> (with your project selected).
@@ -16,7 +16,7 @@ Gmail's own API doesn't report storage. The "72% of 15 GB used" figure comes fro
 
 ## 3. Configure the consent screen (Google Auth Platform)
 1. Open <https://console.cloud.google.com/auth/overview> and click **Get started**.
-2. **App name:** `Email Organizer`. **User support email:** your email. → Next.
+2. **App name:** `Sweep`. **User support email:** your email. → Next.
 3. **Audience:** choose **External**. → Next.
 4. **Contact information:** your email → Next → agree to the policy → **Create**.
 5. Left menu → **Audience**. Leave **Publishing status: Testing**, then under **Test users** click **Add users** and add the Gmail address(es) you'll connect (e.g. your own). Save.
@@ -25,14 +25,14 @@ Gmail's own API doesn't report storage. The "72% of 15 GB used" figure comes fro
 
 ## 4. Create the OAuth client
 1. Left menu → **Clients** → **Create client**.
-2. **Application type: Desktop app.** Name: `Email Organizer Desktop` → **Create**.
+2. **Application type: Desktop app.** Name: `Sweep Desktop` → **Create**.
 3. Copy the **Client ID** and **Client secret**.
    (For installed desktop apps Google does not treat the secret as confidential, but don't commit it to git anyway.)
 
 ## 5. Connect in the app
 1. Run `npm run dev`, open the **Accounts** tab.
 2. Paste the client ID and secret → **Save**, then **Connect Gmail**.
-3. Your browser opens Google's sign-in page. You'll see **"Google hasn't verified this app"**. That's expected for an app in Testing mode that you own: click **Advanced → Go to Email Organizer (unsafe)**, then allow access.
+3. Your browser opens Google's sign-in page. You'll see **"Google hasn't verified this app"**. That's expected for an app in Testing mode that you own: click **Advanced → Go to Sweep (unsafe)**, then allow access.
 4. Return to the app. Your inbox is scanned.
 
 ## Things to know

@@ -787,7 +787,7 @@ export class OrganizerService {
   importRules(data: unknown): ImportResult {
     const file = data as Partial<RulesExport> | null
     if (!file || typeof file !== 'object' || file.app !== 'email-organizer' || !Array.isArray(file.cleanupRules ?? []) || !Array.isArray(file.rules ?? [])) {
-      throw new Error('That isn’t a rules file from Email Organizer.')
+      throw new Error('That isn’t a rules file from Sweep.')
     }
     const cleanups = (file.cleanupRules ?? []).slice(0, IMPORT_LIMIT)
     const scanned = (file.rules ?? []).slice(0, IMPORT_LIMIT)

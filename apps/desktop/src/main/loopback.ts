@@ -37,11 +37,11 @@ export function listenForAuthCode(expectedState: string, timeoutMs = 5 * 60_000)
       const error = url.searchParams.get('error')
       const authCode = url.searchParams.get('code')
       if (error || !authCode) {
-        respond(400, 'Sign-in cancelled', 'You can close this tab and return to Email Organizer.')
+        respond(400, 'Sign-in cancelled', 'You can close this tab and return to Sweep.')
         settle.reject(new Error(error === 'access_denied' ? 'Sign-in was cancelled.' : `Google sign-in failed: ${error ?? 'no code returned'}`))
         return
       }
-      respond(200, 'Connected', 'You can close this tab and return to Email Organizer.')
+      respond(200, 'Connected', 'You can close this tab and return to Sweep.')
       settle.resolve(authCode)
     })
 

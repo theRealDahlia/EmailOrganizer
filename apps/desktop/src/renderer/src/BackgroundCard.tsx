@@ -25,8 +25,8 @@ export function BackgroundCard() {
       <h2>Background</h2>
       <p className="muted" style={{ marginTop: 0 }}>
         {prefs.keepRunning
-          ? `Automatic rules and cleanups keep running while Email Organizer sits in your ${surface}.`
-          : 'Automatic rules and cleanups only run while Email Organizer is open. Turn on the options below to keep them working.'}
+          ? `Automatic rules and cleanups keep running while Sweep sits in your ${surface}.`
+          : 'Automatic rules and cleanups only run while Sweep is open. Turn on the options below to keep them working.'}
       </p>
       {error && <div className="notice error" role="alert">{error}</div>}
       <label className="inline" style={{ alignItems: 'flex-start' }}>

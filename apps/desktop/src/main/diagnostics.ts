@@ -53,7 +53,7 @@ export interface ReportInput {
 export function buildReport(r: ReportInput, home?: string): string {
   const line = (k: string, v: unknown) => `${k}: ${v ?? 'n/a'}`
   const out = [
-    'Email Organizer diagnostics',
+    'Sweep diagnostics',
     `Created ${new Date().toISOString()}`,
     '',
     line('Version', r.app.version),

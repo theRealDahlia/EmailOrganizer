@@ -52,7 +52,7 @@ function registerIpc(service: OrganizerService, accounts: AccountManager, settin
   ipcMain.handle('trashDuplicates', (_e, expected: number) => service.trashDuplicates(expected))
   ipcMain.handle('exportRules', async () => {
     const win = BrowserWindow.getFocusedWindow() ?? undefined
-    const options = { title: 'Export rules', defaultPath: 'email-organizer-rules.json', filters: [{ name: 'Rules', extensions: ['json'] }] }
+    const options = { title: 'Export rules', defaultPath: 'sweep-rules.json', filters: [{ name: 'Rules', extensions: ['json'] }] }
     const { canceled, filePath } = win ? await dialog.showSaveDialog(win, options) : await dialog.showSaveDialog(options)
     if (canceled || !filePath) return null
     const data = service.exportRules()
@@ -150,7 +150,7 @@ function createWindow(show = true) {
     show,
     width: 1100,
     height: 760,
-    title: 'Email Organizer',
+    title: 'Sweep',
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       contextIsolation: true,

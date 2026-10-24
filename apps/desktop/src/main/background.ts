@@ -47,7 +47,7 @@ export class Background {
     }
     const watching = BrowserWindow.getAllWindows().some((w) => w.isVisible() && w.isFocused())
     if (this.settings.background().notify && status.lastChanged > 0 && !watching && Notification.isSupported()) {
-      const n = new Notification({ title: 'Email Organizer', body: `${status.lastSummary}.`, silent: true })
+      const n = new Notification({ title: 'Sweep', body: `${status.lastSummary}.`, silent: true })
       n.on('click', () => this.actions.showWindow())
       n.show()
     }
@@ -58,7 +58,7 @@ export class Background {
     const image = nativeImage.createFromBuffer(Buffer.from(ICON, 'base64'), { scaleFactor: 2 })
     if (process.platform === 'darwin') image.setTemplateImage(true)
     this.tray = new Tray(image)
-    this.tray.setToolTip('Email Organizer')
+    this.tray.setToolTip('Sweep')
     this.tray.on('click', () => this.actions.showWindow())
     this.refreshMenu()
   }
@@ -70,13 +70,13 @@ export class Background {
 
   private refreshMenu(): void {
     this.tray?.setContextMenu(Menu.buildFromTemplate([
-      { label: 'Open Email Organizer', click: () => this.actions.showWindow() },
+      { label: 'Open Sweep', click: () => this.actions.showWindow() },
       { type: 'separator' },
       { label: this.lastLine, enabled: false },
       { label: 'Run automatic rules now', click: () => this.actions.runNow() },
       { type: 'separator' },
       { label: 'Quit', click: () => app.quit() },
     ]))
-    this.tray?.setToolTip(`Email Organizer\n${this.lastLine}`)
+    this.tray?.setToolTip(`Sweep\n${this.lastLine}`)
   }
 }

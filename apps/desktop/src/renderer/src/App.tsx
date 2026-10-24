@@ -358,7 +358,7 @@ export function App() {
       {guide === 'show' && status && <Onboarding status={status} overview={overview} progress={progress} onAccountChanged={accountChanged} onFinish={finishGuide} />}
       {paletteOpen && <CommandPalette commands={commands} onClose={() => setPaletteOpen(false)} onSearchSenders={(text) => { setSendersSearch({ text }); setTab('senders') }} />}
       <aside className="sidebar" inert={modalOpen}>
-        <div className="brand"><span className="brand-mark"><Icon name="subscriptions" size={16} /></span>Email Organizer</div>
+        <div className="brand"><span className="brand-mark"><Icon name="sweep" size={18} /></span><span className="brand-text"><b>Sweep</b><small>Inbox management</small></span></div>
         <nav aria-label="Pages" ref={navRef}>
           {pill && <span className="nav-pill" style={pill} aria-hidden="true" />}
           {TABS.map((t) => (
