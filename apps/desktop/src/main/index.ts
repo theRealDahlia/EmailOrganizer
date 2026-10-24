@@ -13,6 +13,13 @@ import { Diagnostics, buildReport } from './diagnostics'
 import { homedir, release as osRelease } from 'node:os'
 import { AUTO_INTERVAL_MS, NEW_MAIL_INTERVAL_MS, OrganizerService } from './service'
 
+// Show the app as Sweep (menus, notifications, the Dock), but keep saved data in the folder it has always used,
+// so renaming the app never makes an existing install look empty.
+app.setPath('userData', join(app.getPath('appData'), '@organizer', 'desktop'))
+app.setName('Sweep')
+if (process.platform === 'win32') app.setAppUserModelId('Sweep')
+const ICON = join(__dirname, '../../resources/icon.png')
+
 let store: Store
 let settings: Settings
 
@@ -151,6 +158,7 @@ function createWindow(show = true) {
     width: 1100,
     height: 760,
     title: 'Sweep',
+    icon: ICON, // Windows and Linux; macOS takes the Dock icon below
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       contextIsolation: true,
@@ -182,6 +190,7 @@ const showWindow = () => {
 app.on('second-instance', showWindow)
 
 app.whenReady().then(() => {
+  if (process.platform === 'darwin') app.dock?.setIcon(ICON)
   store = new Store(join(app.getPath('userData'), 'organizer.sqlite'))
   settings = new Settings(join(app.getPath('userData'), 'settings.json'))
   const secrets = new SecretStore(join(app.getPath('userData'), 'secrets.json'))
