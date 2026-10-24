@@ -27,6 +27,24 @@ export class Settings {
     return { openAtLogin: b['openAtLogin'] === true, keepRunning: b['keepRunning'] === true, notify: b['notify'] === true }
   }
 
+  /** Whether the first-run guide has been finished or skipped. */
+  onboarded(): boolean {
+    return this.read()['onboarded'] === true
+  }
+
+  setOnboarded(done: boolean): void {
+    writeFileSync(this.file, JSON.stringify({ ...this.read(), onboarded: done === true }, null, 2))
+  }
+
+  /** A kill switch for everything that runs on its own. Off by default. */
+  automationPaused(): boolean {
+    return this.read()['automationPaused'] === true
+  }
+
+  setAutomationPaused(paused: boolean): void {
+    writeFileSync(this.file, JSON.stringify({ ...this.read(), automationPaused: paused === true }, null, 2))
+  }
+
   setBackground(change: Partial<BackgroundPrefs>): BackgroundPrefs {
     const next = { ...this.background() }
     for (const key of ['openAtLogin', 'keepRunning', 'notify'] as const) if (typeof change[key] === 'boolean') next[key] = change[key]!

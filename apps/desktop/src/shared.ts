@@ -178,6 +178,8 @@ export interface AutomationStatus {
   lastSummary: string
   /** ISO time the app last looked for new mail on its own, even if there was none */
   lastCheckedAt: string | null
+  /** the user paused every automatic rule and cleanup; nothing runs on its own until they resume */
+  paused: boolean
   /** why the last check failed (offline, rate limited, signed out), or null if it worked; checks never show errors themselves */
   checkError: string | null
 }
@@ -366,6 +368,15 @@ export interface OrganizerApi {
   impact(): Promise<ImpactSummary>
   /** Unsubscribes the user has sent, and whether each sender stopped. */
   unsubscribeStatus(): Promise<UnsubscribeRecord[]>
+  /** Whether the first-run guide has been finished or skipped. */
+  getOnboarded(): Promise<boolean>
+  setOnboarded(done: boolean): Promise<void>
+  /** Plain text for the user to paste into an email when they need help: versions, counts and recent errors, nothing personal. */
+  diagnostics(): Promise<string>
+  /** Notes a problem seen in the window, so it shows up in the diagnostics. */
+  logError(message: string): Promise<void>
+  /** Stops (or restarts) every automatic rule and cleanup at once. Manual use is unaffected. */
+  setAutomationPaused(paused: boolean): Promise<AutomationStatus>
   /** What automatic rules and cleanups have done, and what they left for review. */
   automation(): Promise<AutomationStatus>
   /** Runs every automatic rule and cleanup now instead of waiting for the next scheduled run. */

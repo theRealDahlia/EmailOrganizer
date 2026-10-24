@@ -16,7 +16,7 @@ export function CountUp({ value }: { value: number }) {
     const start = performance.now()
     let frame = 0
     const step = (now: number) => {
-      const t = Math.min(1, (now - start) / 600)
+      const t = Math.max(0, Math.min(1, (now - start) / 600)) // the first frame's timestamp can predate `start`
       const next = Math.round(from + (value - from) * (1 - (1 - t) ** 3))
       current.current = next
       setShown(next)

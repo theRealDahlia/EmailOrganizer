@@ -9,6 +9,8 @@ import { SecretStore } from './secrets'
 import { Settings } from './settings'
 import { AiRules } from './ai'
 import { Background } from './background'
+import { Diagnostics, buildReport } from './diagnostics'
+import { homedir, release as osRelease } from 'node:os'
 import { AUTO_INTERVAL_MS, NEW_MAIL_INTERVAL_MS, OrganizerService } from './service'
 
 let store: Store
@@ -16,7 +18,33 @@ let settings: Settings
 
 const AI_KEY = 'anthropic.apiKey'
 
+const diagnostics = new Diagnostics(homedir())
+process.on('uncaughtExceptionMonitor', (e) => diagnostics.record('main', e)) // watches without changing what happens next
+process.on('unhandledRejection', (e) => diagnostics.record('main', e))
+
 function registerIpc(service: OrganizerService, accounts: AccountManager, settings: Settings, secrets: SecretStore, background: Background) {
+  ipcMain.handle('getOnboarded', () => settings.onboarded())
+  ipcMain.handle('setOnboarded', (_e, done: boolean) => settings.setOnboarded(done === true))
+  ipcMain.handle('logError', (_e, message: string) => diagnostics.record('screen', String(message ?? '').slice(0, 600)))
+  ipcMain.handle('diagnostics', () => {
+    const h = service.healthSnapshot()
+    const a = service.automation()
+    const bg = settings.background()
+    return buildReport({
+      app: { version: app.getVersion(), electron: process.versions.electron, chrome: process.versions.chrome, node: process.versions.node },
+      system: { platform: process.platform, arch: process.arch, release: osRelease(), locale: app.getLocale(), memoryMB: Math.round(process.memoryUsage().rss / 1048576), uptimeMinutes: Math.round(process.uptime() / 60) },
+      mailbox: { mode: accounts.status().mode, scanned: h.scanned, inboxTotal: h.inboxTotal, complete: h.complete },
+      rules: { cleanup: h.cleanup, scanned: h.scannedRules, automatic: h.automatic },
+      automation: { paused: a.paused, lastRunAt: a.lastRunAt, lastCheckedAt: a.lastCheckedAt, checkError: a.checkError, needsReview: a.needsReview.length, errorCount: a.errors.length },
+      settings: { theme: settings.theme(), keepRunning: bg.keepRunning, openAtLogin: bg.openAtLogin, notify: bg.notify, aiKeySaved: !!secrets.get(AI_KEY) },
+      errors: [...diagnostics.recent(), ...a.errors.map((e) => ({ at: a.lastRunAt ?? new Date().toISOString(), source: 'automation', message: e.message }))],
+    }, homedir())
+  })
+  ipcMain.handle('setAutomationPaused', (_e, paused: boolean) => {
+    settings.setAutomationPaused(paused === true)
+    if (!settings.automationPaused()) service.runAutomatic().catch(() => {}) // resuming starts working straight away
+    return service.automation()
+  })
   ipcMain.handle('getBackground', () => background.state())
   ipcMain.handle('setBackground', (_e, change: Partial<BackgroundPrefs>) => { settings.setBackground(change ?? {}); background.apply(); return background.state() })
   const ai = new AiRules(() => secrets.get(AI_KEY))
@@ -165,7 +193,7 @@ app.whenReady().then(() => {
     BrowserWindow.getAllWindows().forEach((w) => w.webContents.send('automatic-run', status))
     background.onAutomaticRun(status)
   }
-  service = new OrganizerService(() => accounts.provider(), store, sendProgress, { onAutomatic: sendAutomatic })
+  service = new OrganizerService(() => accounts.provider(), store, sendProgress, { onAutomatic: sendAutomatic, isPaused: () => settings.automationPaused() })
   nativeTheme.themeSource = settings.theme() // before the window opens, so it never flashes the wrong theme
   registerIpc(service, accounts, settings, secrets, background)
   background.apply()

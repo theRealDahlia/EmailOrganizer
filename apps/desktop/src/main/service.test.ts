@@ -35,7 +35,7 @@ class FakeStore {
   unsubscribes: import('../shared').UnsubscribeRecord[] = []
   recordUnsubscribe(r: import('../shared').UnsubscribeRecord) { this.unsubscribes = [...this.unsubscribes.filter((x) => x.email !== r.email), r] }
   listUnsubscribes() { return this.unsubscribes }
-  takeUndo(id: number) { const e = this.activity.find((a) => a.id === id)!; e.undone = true; return e.undo }
+  takeUndo(id: number) { const e = this.activity.find((a) => a.id === id); if (!e || e.undone) return null; e.undone = true; return e.undo } // like the real store: once only
 }
 
 /** A demo mailbox that looks like a real account and records how much it was asked to download. */
@@ -1444,7 +1444,9 @@ class FakeGmail {
         this.searches.push(q)
         const from = q.match(/from:\(([^)]*)\)/)?.[1]?.toLowerCase()
         const inInbox = q.includes('in:inbox')
-        return json({ messages: this.ids((m) => !this.indexLag.has(m.id) && (!inInbox || m.labelIds.includes('INBOX')) && (!from || m.from.toLowerCase().includes(from))) })
+        const notStarred = q.includes('-is:starred')
+        const unreadOnly = / is:unread|^is:unread/.test(` ${q}`) && !q.includes('-is:unread')
+        return json({ messages: this.ids((m) => !this.indexLag.has(m.id) && (!inInbox || m.labelIds.includes('INBOX')) && !(notStarred && m.labelIds.includes('STARRED')) && (!unreadOnly || m.labelIds.includes('UNREAD')) && (!from || m.from.toLowerCase().includes(from))) })
       }
       return json({ messages: this.ids((m) => labels.every((l) => m.labelIds.includes(l))) })
     }
@@ -1765,5 +1767,151 @@ describe('choosing which emails of a suggestion go to Trash', () => {
     const entry = await service.trashSelected({ kind: 'duplicates' }, ['a', 'b']) // b isn't an extra, so it stays
     expect(entry.messageCount).toBe(1)
     expect(provider.mail.filter((m) => m.labels.includes('INBOX')).map((m) => m.id).sort()).toEqual(['b', 'c'])
+  })
+})
+
+
+describe('safety net: what an automatic rule can and cannot do to a real-sized inbox', () => {
+  const PROMO = 'Promo <promo@shop.example>'
+  const labelsOf = (gmail: FakeGmail) => JSON.stringify(gmail.messages.map((m) => [m.id, [...m.labelIds].sort()]))
+  const bulk = (gmail: FakeGmail, n: number, from = PROMO, extra: string[] = []) => Array.from({ length: n }, (_, i) => gmail.add(from, `Offer ${i}`, ['INBOX', 'UNREAD', ...extra]))
+  const setupSafety = () => {
+    const gmail = new FakeGmail()
+    const store = new FakeStore()
+    const provider = gmail.provider()
+    return { gmail, store, provider, service: new OrganizerService(() => provider, store as unknown as Store) }
+  }
+  const trashRule = (over: Partial<CleanupRule> = {}): CleanupRule => ({ id: 'auto', name: 'Promo', filters: { from: 'promo@shop.example', keepStarred: true }, actions: [{ type: 'trash' }], auto: true, ...over })
+
+  it('leaves an automatic Trash cleanup that matches too much for review, and touches nothing', async () => {
+    const { gmail, store, service } = setupSafety()
+    bulk(gmail, 2_500)
+    store.saveCleanupRule(trashRule())
+    const before = labelsOf(gmail)
+
+    const status = await service.runAutomatic()
+    expect(status.needsReview).toEqual([{ id: 'auto', name: 'Promo', count: 2_500, kind: 'cleanup' }])
+    expect(gmail.modified).toEqual([])
+    expect(labelsOf(gmail)).toBe(before)
+    expect(store.activity).toEqual([])
+    await service.runAutomatic() // asking again doesn't change its mind or move anything
+    expect(gmail.modified).toEqual([])
+  })
+
+  it('runs at exactly the limit, and one over is held back', async () => {
+    const atLimit = setupSafety()
+    bulk(atLimit.gmail, 2_000)
+    atLimit.store.saveCleanupRule(trashRule())
+    expect((await atLimit.service.runAutomatic()).needsReview).toEqual([])
+    expect(atLimit.gmail.messages.filter((m) => m.labelIds.includes('INBOX'))).toHaveLength(0)
+
+    const over = setupSafety()
+    bulk(over.gmail, 2_001)
+    over.store.saveCleanupRule(trashRule())
+    expect((await over.service.runAutomatic()).needsReview).toHaveLength(1)
+    expect(over.gmail.messages.filter((m) => m.labelIds.includes('INBOX'))).toHaveLength(2_001)
+  })
+
+  it('lets the user approve a held-back rule by hand, after which new mail is handled automatically', async () => {
+    const { gmail, store, service } = setupSafety()
+    bulk(gmail, 2_500)
+    store.saveCleanupRule(trashRule())
+    await service.runAutomatic()
+    const { count } = await service.cleanupCount('auto')
+    await service.applyCleanup('auto', count) // the user looked at the preview and chose to
+    expect(gmail.messages.filter((m) => m.labelIds.includes('INBOX'))).toHaveLength(0)
+
+    const id = gmail.add(PROMO, 'New offer')
+    expect((await service.runAutomatic()).needsReview).toEqual([])
+    expect(gmail.messages.find((m) => m.id === id)!.labelIds).toContain('TRASH')
+  })
+
+  it('never takes starred mail, and undo puts back exactly what was moved', async () => {
+    const { gmail, store, service } = setupSafety()
+    const ids = bulk(gmail, 10)
+    gmail.messages.filter((m) => ['m2', 'm5', 'm9'].includes(m.id)).forEach((m) => m.labelIds.push('STARRED'))
+    store.saveCleanupRule(trashRule())
+    const before = labelsOf(gmail)
+
+    await service.runAutomatic()
+    const starred = gmail.messages.filter((m) => m.labelIds.includes('STARRED'))
+    expect(starred.every((m) => m.labelIds.includes('INBOX') && !m.labelIds.includes('TRASH'))).toBe(true)
+    expect(gmail.messages.filter((m) => m.labelIds.includes('TRASH'))).toHaveLength(7)
+    expect(ids).toHaveLength(10)
+
+    await service.undo(store.activity[0].id as number)
+    expect(labelsOf(gmail)).toBe(before) // every message has exactly the labels it started with
+  })
+
+  it('undoes an automatic archive and mark-read run exactly, and only once', async () => {
+    const { gmail, store, service } = setupSafety()
+    bulk(gmail, 30)
+    gmail.messages[3].labelIds = ['INBOX'] // one was already read
+    store.saveCleanupRule({ id: 'a', name: 'Tidy', filters: { from: 'promo@shop.example' }, actions: [{ type: 'archive' }, { type: 'markRead' }], auto: true })
+    const before = labelsOf(gmail)
+
+    await service.runAutomatic()
+    // the rule only takes unread mail (that's what makes undoing it exact), so the one already-read message stays put
+    expect(gmail.messages.filter((m) => m.labelIds.includes('INBOX')).map((m) => m.id)).toEqual(['m4'])
+    const id = store.activity[0].id as number
+    await service.undo(id)
+    expect(labelsOf(gmail)).toBe(before)
+    await expect(service.undo(id)).rejects.toThrow('Nothing to undo')
+  })
+
+  it('refuses to save an automatic Trash cleanup that could reach everyday mail, and would not run one that got in anyway', async () => {
+    const { gmail, store, service } = setupSafety()
+    bulk(gmail, 20, 'Friend <friend@mail.example>')
+    const broad = { id: 'broad', name: 'Old mail', filters: { olderThan: { value: 1, unit: 'y' as const } }, actions: [{ type: 'trash' as const }], auto: true, allowBroad: true }
+    expect(() => service.saveCleanupRule(broad)).toThrow(/Automatic cleanups can’t move everyday mail/)
+
+    store.saveCleanupRule(broad) // e.g. from a damaged or hand-edited database
+    const status = await service.runAutomatic()
+    expect(status.errors).toEqual([{ name: 'Old mail', message: expect.stringContaining('everyday mail'), kind: 'cleanup' }])
+    expect(gmail.modified).toEqual([])
+  })
+
+  it('holds back an automatic Trash rule on scanned mail that matches too much', async () => {
+    const { gmail, store, service } = setupSafety()
+    bulk(gmail, 2_300)
+    service.scanFullInbox()
+    await service.overview() // the whole inbox is scanned, so the rule sees all 2,300
+    store.saveRule({ id: 'r', name: 'Promo', enabled: true, match: 'all', auto: true, conditions: [{ field: 'senderEmail', op: 'equals', value: 'promo@shop.example' }], actions: [{ type: 'trash' }] })
+    const status = await service.runAutomatic()
+    expect(status.needsReview).toEqual([{ id: 'r', name: 'Promo', count: 2_300, kind: 'rule' }])
+    expect(gmail.modified).toEqual([])
+  })
+
+  it('never runs a rule that is switched off', async () => {
+    const { gmail, store, service } = setupSafety()
+    bulk(gmail, 5)
+    service.scanFullInbox()
+    await service.overview()
+    store.saveRule({ id: 'r', name: 'Off', enabled: false, match: 'all', auto: true, conditions: [{ field: 'senderEmail', op: 'equals', value: 'promo@shop.example' }], actions: [{ type: 'archive' }] })
+    await service.runAutomatic()
+    expect(gmail.modified).toEqual([])
+  })
+
+  it('stops everything when paused, including runs that new mail would trigger, and starts again when resumed', async () => {
+    let paused = true
+    const gmail = new FakeGmail()
+    const store = new FakeStore()
+    const provider = gmail.provider()
+    const service = new OrganizerService(() => provider, store as unknown as Store, () => {}, { isPaused: () => paused })
+    bulk(gmail, 5)
+    await service.overview()
+    store.saveCleanupRule({ id: 'a', name: 'Archive promo', filters: { from: 'promo@shop.example' }, actions: [{ type: 'archive' }], auto: true })
+
+    expect((await service.runAutomatic()).paused).toBe(true)
+    gmail.arrive(PROMO) // new mail would normally trigger a run
+    await service.checkNewMail()
+    await new Promise((r) => setTimeout(r, 80))
+    expect(gmail.modified).toEqual([])
+    expect(service.automation().paused).toBe(true)
+
+    paused = false
+    await service.runAutomatic()
+    expect(gmail.messages.filter((m) => m.labelIds.includes('INBOX'))).toHaveLength(0)
+    expect(service.automation().paused).toBe(false)
   })
 })

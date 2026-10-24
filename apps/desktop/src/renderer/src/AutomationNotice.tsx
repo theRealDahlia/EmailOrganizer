@@ -22,9 +22,14 @@ export function AutomationNotice({ active, onRan }: { active: boolean; onRan?: (
     return () => { clearInterval(timer); off() }
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
-  if (!active || !status) return null
+  if (!status || (!active && !status.paused)) return null
 
   const time = (iso: string) => new Date(iso).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+
+  const setPaused = async (paused: boolean) => {
+    setRunning(true); setError(null)
+    try { setStatus(await api.setAutomationPaused(paused)); onRan?.() } catch (e) { setError(errorText(e)) } finally { setRunning(false) }
+  }
 
   const runNow = async () => {
     setRunning(true); setError(null)
@@ -36,14 +41,20 @@ export function AutomationNotice({ active, onRan }: { active: boolean; onRan?: (
       <div className="automation-head">
         <span className="tile soft"><Icon name="clock" size={17} /></span>
         <div>
-          <b>Automatic rules are on</b>
+          <b>{status.paused ? 'Automatic rules are paused' : 'Automatic rules are on'}</b>
           <div className="muted">
+            {status.paused ? 'Nothing runs on its own until you resume. Your rules are kept, and you can still preview and apply them yourself. ' : ''}
             {status.lastCheckedAt ? `Last looked for new mail at ${time(status.lastCheckedAt)}. ` : 'Looks for new mail every minute. '}
             {status.lastRunAt ? `Last ran at ${time(status.lastRunAt)}. ` : 'Runs shortly after launch. '}
             They run when new mail arrives and about every 30 minutes, while the app is open, and each run shows in Activity.
           </div>
         </div>
-        <button className="btn" disabled={running} onClick={runNow}>{running ? 'Running…' : 'Run now'}</button>
+        {status.paused
+          ? <button className="btn primary" disabled={running} onClick={() => setPaused(false)}>Resume</button>
+          : <>
+              <button className="btn" disabled={running} onClick={() => setPaused(true)} title="Stops every automatic rule and cleanup until you resume them. Nothing else changes.">Pause all</button>
+              <button className="btn" disabled={running} onClick={runNow}>{running ? 'Running…' : 'Run now'}</button>
+            </>}
       </div>
       {error && <div className="error" role="alert">{error}</div>}
       {status.checkError && (

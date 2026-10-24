@@ -15,6 +15,8 @@ import { SpaceTab } from './SpaceTab'
 import { SuggestionsCard } from './SuggestionsCard'
 import { AiKeyCard } from './AiKeyCard'
 import { BackgroundCard } from './BackgroundCard'
+import { HelpCard } from './HelpCard'
+import { Onboarding } from './Onboarding'
 import { CommandPalette, type Command } from './CommandPalette'
 
 type Tab = 'overview' | 'space' | 'senders' | 'cleanup' | 'subscriptions' | 'activity' | 'accounts'
@@ -233,6 +235,7 @@ function AccountsTab({ status, onChanged }: { status: AccountStatus | null; onCh
       </section>
       <BackgroundCard />
       <AiKeyCard secureStorage={status.secureStorage} />
+      <HelpCard />
       {status.mode === 'demo' && (
         <details className="card" style={{ marginTop: 16 }} open={!status.hasCredentials}>
           <summary>Advanced: use your own Google OAuth client</summary>
@@ -258,6 +261,15 @@ export function App() {
   // "Custom cleanup" on a sender opens the Cleanup editor already filled in for them.
   const [prefill, setPrefill] = useState<CleanupPrefill | null>(null)
   // Cmd/Ctrl+K opens the command palette from anywhere.
+  // The first-run guide: shown until finished or skipped. Someone who is already connected has no need for it.
+  const [onboarded, setOnboarded] = useState<boolean | null>(null)
+  const [guide, setGuide] = useState<'checking' | 'show' | 'hide'>('checking')
+  useEffect(() => { api.getOnboarded().then(setOnboarded, () => setOnboarded(true)) }, [])
+  useEffect(() => {
+    if (guide !== 'checking' || onboarded === null || !status) return
+    if (onboarded || status.mode === 'gmail') { setGuide('hide'); if (!onboarded) api.setOnboarded(true) } else setGuide('show')
+  }, [guide, onboarded, status])
+  const finishGuide = (go: Tab) => { api.setOnboarded(true); setGuide('hide'); setTab(go) }
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [sendersSearch, setSendersSearch] = useState<{ text: string } | undefined>(undefined)
   useEffect(() => {
@@ -302,7 +314,7 @@ export function App() {
     const nav = navRef.current
     if (!nav) return
     const place = () => {
-      const el = nav.querySelector<HTMLElement>('[aria-selected="true"]')
+      const el = nav.querySelector<HTMLElement>('[aria-current="page"]')
       if (!el) return
       setPill((prev) => ({
         transform: `translate(${el.offsetLeft}px, ${el.offsetTop}px)`, width: el.offsetWidth, height: el.offsetHeight,
@@ -313,6 +325,15 @@ export function App() {
     const observer = new ResizeObserver(place)
     observer.observe(nav)
     return () => observer.disconnect()
+  }, [tab])
+
+  // Switching pages moves focus to the new page's heading, so keyboard and screen-reader users land where the content starts.
+  const mainRef = useRef<HTMLElement>(null)
+  const headingRef = useRef<HTMLHeadingElement>(null)
+  const firstPage = useRef(true)
+  useEffect(() => {
+    if (firstPage.current) { firstPage.current = false; return }
+    headingRef.current?.focus({ preventScroll: true })
   }, [tab])
 
   const commands: Command[] = [
@@ -329,16 +350,19 @@ export function App() {
 
   const account = status?.mode === 'gmail' ? status.email ?? 'Gmail' : 'Demo mailbox'
   const head = PAGES[tab]
+  const modalOpen = guide === 'show' || paletteOpen // what's behind a dialog can't be reached by keyboard or screen reader
 
   return (
     <div className="shell">
+      <a className="skip-link" href="#main" onClick={(e) => { e.preventDefault(); mainRef.current?.focus() }}>Skip to content</a>
+      {guide === 'show' && status && <Onboarding status={status} overview={overview} progress={progress} onAccountChanged={accountChanged} onFinish={finishGuide} />}
       {paletteOpen && <CommandPalette commands={commands} onClose={() => setPaletteOpen(false)} onSearchSenders={(text) => { setSendersSearch({ text }); setTab('senders') }} />}
-      <aside className="sidebar">
+      <aside className="sidebar" inert={modalOpen}>
         <div className="brand"><span className="brand-mark"><Icon name="subscriptions" size={16} /></span>Email Organizer</div>
-        <nav role="tablist" aria-orientation="vertical" ref={navRef}>
+        <nav aria-label="Pages" ref={navRef}>
           {pill && <span className="nav-pill" style={pill} aria-hidden="true" />}
           {TABS.map((t) => (
-            <button key={t} role="tab" className="nav-item" aria-selected={tab === t} onClick={() => setTab(t)}>
+            <button key={t} className="nav-item" aria-current={tab === t ? 'page' : undefined} onClick={() => setTab(t)}>
               <span className="nav-ico" style={hue(PAGE_HUE[t])}><Icon name={t} size={16} /></span>{PAGES[t].title}
             </button>
           ))}
@@ -346,16 +370,16 @@ export function App() {
         <div className="sidebar-foot">
           <ThemeSwitch />
           <StorageMeter refreshKey={`${status?.mode}:${status?.email}:${overview?.total}`} onReconnect={() => setTab('accounts')} />
-          <button className="account-chip nav-item" onClick={() => setTab('accounts')} title="Manage account">
+          <button className="account-chip nav-item" onClick={() => setTab('accounts')} title="Manage account" aria-label={`Manage account: ${account}`}>
             <Avatar name={account} />
             <span style={{ minWidth: 0 }}><b>{account}</b><small>Stays on this computer</small></span>
           </button>
         </div>
       </aside>
-      <main className="main">
+      <main className="main" id="main" inert={modalOpen} tabIndex={-1} ref={mainRef}>
         <div className="content" key={tab /* remount so the page's entrance plays on every switch */}>
           <div className="page-head">
-            <div><h1>{head.title}</h1><p>{head.blurb}</p></div>
+            <div><h1 ref={headingRef} tabIndex={-1}>{head.title}</h1><p>{head.blurb}</p></div>
             {tab === 'overview' && overview && !overview.scanning && <button className="btn" onClick={() => refresh(true)}>Rescan inbox</button>}
           </div>
           {tab === 'overview' && <OverviewTab overview={overview} error={overviewError} progress={progress} onRescan={() => refresh(true)} onCancel={() => { api.cancelScan() }}

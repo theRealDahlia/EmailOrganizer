@@ -120,6 +120,7 @@ export class OrganizerService {
   private counted = new Map<string, { provider: MailProvider; promise: Promise<unknown> }>()
   private sampleSize: number
   private onAutomatic: (status: AutomationStatus) => void
+  private isPaused: () => boolean
   private automating: Promise<AutomationStatus> | null = null
   private polling = false
   /** messages the automatic rules have been given the chance to act on */
@@ -127,16 +128,17 @@ export class OrganizerService {
   private rerunRequested = false
   /** looks at the rules still to make after new mail, for mail Gmail's search may not have caught up on yet */
   private automaticRechecks = 0
-  private auto: AutomationStatus = { lastRunAt: null, needsReview: [], errors: [], runs: 0, lastChanged: 0, lastSummary: '', lastCheckedAt: null, checkError: null }
+  private auto: AutomationStatus = { lastRunAt: null, needsReview: [], errors: [], runs: 0, lastChanged: 0, lastSummary: '', lastCheckedAt: null, checkError: null, paused: false }
 
   constructor(
     private getProvider: () => MailProvider,
     private store: Store,
     private onProgress: (p: ScanProgress) => void = () => {},
-    options: { sampleSize?: number; onAutomatic?: (status: AutomationStatus) => void } = {},
+    options: { sampleSize?: number; onAutomatic?: (status: AutomationStatus) => void; isPaused?: () => boolean } = {},
   ) {
     this.sampleSize = options.sampleSize ?? SAMPLE_SIZE
     this.onAutomatic = options.onAutomatic ?? (() => {})
+    this.isPaused = options.isPaused ?? (() => false)
     if (store.listRules().length === 0) DEFAULT_RULES.forEach((r) => store.saveRule(r))
   }
 
@@ -959,6 +961,17 @@ export class OrganizerService {
     return findDuplicates(v.messages).flatMap((g) => g.extras).sort((a, b) => b.date.localeCompare(a.date))
   }
 
+  /** Counts for the diagnostics. Never scans or searches, so asking for help can't make anything worse. */
+  healthSnapshot() {
+    const view = this.cache ?? this.stale
+    const cleanups = this.store.listCleanupRules()
+    const rules = this.store.listRules()
+    return {
+      scanned: view?.messages.length, inboxTotal: view?.inboxTotal, complete: view?.complete,
+      cleanup: cleanups.length, scannedRules: rules.length, automatic: cleanups.filter((r) => r.auto).length + rules.filter((r) => r.auto && r.enabled).length,
+    }
+  }
+
   // --- Impact: what the app has done for the user ---
 
   /** This month's and all-time totals, and each rule's lifetime count. Undone changes don't count. */
@@ -1026,7 +1039,7 @@ export class OrganizerService {
   // --- Automatic rules and cleanups: applied on their own, with limits, because nobody is there to preview them ---
 
   automation(): AutomationStatus {
-    return { ...this.auto, needsReview: [...this.auto.needsReview], errors: [...this.auto.errors] }
+    return { ...this.auto, paused: this.isPaused(), needsReview: [...this.auto.needsReview], errors: [...this.auto.errors] }
   }
 
   /**
@@ -1051,6 +1064,7 @@ export class OrganizerService {
   }
 
   private async runAutomaticNow(): Promise<AutomationStatus> {
+    if (this.isPaused()) return this.automation() // the user's kill switch: nothing runs on its own, whatever asked for a run
     const needsReview: AutomationStatus['needsReview'] = []
     const errors: AutomationStatus['errors'] = []
     let changed = 0
